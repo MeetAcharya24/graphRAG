@@ -95,12 +95,18 @@ def test_no_chunk_is_empty_or_whitespace_only() -> None:
         assert chunk.text.strip(), chunk.chunk_id
 
 
-def test_a_tiny_trailing_remainder_is_merged_into_the_previous_chunk() -> None:
-    """A 5-character final chunk is useless to retrieve on its own."""
+def test_no_chunk_falls_below_the_minimum_size() -> None:
+    """A handful of trailing characters is useless to retrieve on its own.
+
+    This asserts the invariant only. Whether the merge helper fires is covered
+    directly by the _merge_tiny_tail tests below - in practice the carried
+    overlap already keeps continuation chunks above the floor.
+    """
     text = _long_single_paragraph(CHUNK_TARGET_CHARS) + " tail"
 
     chunks = chunk_text(text, doc_id="abc123")
 
+    assert len(chunks) > 1
     assert all(
         len(c.text) >= CHUNK_MIN_CHARS for c in chunks
     ), [len(c.text) for c in chunks]
@@ -199,3 +205,68 @@ def test_unicode_and_emoji_survive_chunking() -> None:
     joined = " ".join(c.text for c in chunks)
     for fragment in ("Café", "Müller", "🚀", "日本語"):
         assert fragment in joined, fragment
+
+
+# --- defensive branches ---------------------------------------------------
+
+
+def test_a_zero_overlap_budget_yields_no_overlap() -> None:
+    """Guard for a misconfigured CHUNK_OVERLAP_CHARS."""
+    from app.ingest.chunker import _tail_words
+
+    assert _tail_words("some words here", 0) == ""
+    assert _tail_words("some words here", -5) == ""
+
+
+def test_tail_words_takes_whole_words_from_the_end() -> None:
+    from app.ingest.chunker import _tail_words
+
+    # Walks backwards from the end, taking only words that fit whole.
+    assert _tail_words("elephant a", 4) == "a"
+    assert _tail_words("one two three", 9) == "two three"
+
+    # When the final word alone exceeds the budget there is no usable tail.
+    # Returning a leading word instead would not be a tail at all.
+    assert _tail_words("a elephant", 4) == ""
+    assert _tail_words("elephant", 4) == ""
+
+
+def test_a_tiny_tail_is_folded_into_the_previous_chunk() -> None:
+    from app.ingest.chunker import _merge_tiny_tail
+
+    body = "x" * 200
+    tiny = "y" * (CHUNK_MIN_CHARS - 1)
+
+    result = _merge_tiny_tail([body, tiny])
+
+    assert len(result) == 1
+    assert result[0] == f"{body} {tiny}"
+
+
+def test_a_tail_at_the_minimum_size_is_left_alone() -> None:
+    from app.ingest.chunker import _merge_tiny_tail
+
+    body = "x" * 200
+    at_floor = "y" * CHUNK_MIN_CHARS
+
+    assert _merge_tiny_tail([body, at_floor]) == [body, at_floor]
+
+
+def test_a_lone_short_chunk_is_never_merged_away() -> None:
+    """A genuinely short document is still a document."""
+    from app.ingest.chunker import _merge_tiny_tail
+
+    assert _merge_tiny_tail(["tiny"]) == ["tiny"]
+
+
+def test_a_small_tail_is_kept_when_merging_would_breach_the_size_bound() -> None:
+    """Dropping text would be worse than keeping an undersized chunk."""
+    from app.ingest.chunker import _merge_tiny_tail
+
+    full = "x" * CHUNK_TARGET_CHARS
+    tiny = "y" * (CHUNK_MIN_CHARS - 1)
+
+    result = _merge_tiny_tail([full, tiny])
+
+    assert result == [full, tiny]
+    assert "".join(result).count("y") == CHUNK_MIN_CHARS - 1  # no text lost
