@@ -1,0 +1,7 @@
+# Normalise line endings so Windows checkouts do not produce whole-file diffs.
+* text=auto eol=lf
+
+# Binary fixtures must never be touched.
+*.pdf binary
+*.png binary
+*.jpg binary
