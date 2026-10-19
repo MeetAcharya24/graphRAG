@@ -5,13 +5,16 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import PROJECT_ROOT, PROVIDER_GEMINI, get_settings
 from app.errors import AppError, ok
+from app.ingest.chunker import chunk_text
+from app.ingest.loaders import load_document
 from app.logging_conf import configure_logging, get_logger
+from app.schemas import DocumentSummary
 
 log = get_logger(__name__)
 STATIC_DIR = PROJECT_ROOT / "app" / "static"
@@ -78,6 +81,32 @@ async def health() -> dict:
             "answer_model": settings.answer_model or None,
             "models_configured": bool(settings.extraction_model and settings.answer_model),
         }
+    )
+
+
+@app.post("/api/documents")
+async def upload_document(file: UploadFile = File(...)) -> dict:
+    """Read an uploaded file and report how it chunked.
+
+    Phase 1 stores nothing: embedding and graph extraction arrive in Phases 2
+    and 4. The response shape is already final.
+    """
+    data = await file.read()
+    document = load_document(file.filename or "", data)
+    chunks = chunk_text(document.text, doc_id=document.doc_id)
+
+    log.info(
+        "Ingested %s as %s (%d chunks)",
+        document.filename,
+        document.doc_id,
+        len(chunks),
+    )
+    return ok(
+        DocumentSummary(
+            doc_id=document.doc_id,
+            filename=document.filename,
+            chunk_count=len(chunks),
+        ).model_dump()
     )
 
 
