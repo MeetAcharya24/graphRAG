@@ -8,13 +8,20 @@ from typing import AsyncIterator
 from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
-from app.config import PROJECT_ROOT, PROVIDER_GEMINI, get_settings
+from app.config import (
+    PROJECT_ROOT,
+    PROVIDER_GEMINI,
+    SESSION_COOKIE_NAME,
+    get_settings,
+)
 from app.errors import AppError, ok
 from app.ingest.chunker import chunk_text
 from app.ingest.loaders import load_document
 from app.logging_conf import configure_logging, get_logger
 from app.schemas import DocumentSummary
+from app.security import auth
 
 log = get_logger(__name__)
 STATIC_DIR = PROJECT_ROOT / "app" / "static"
@@ -28,6 +35,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Fail at boot, not on the user's first question.
     settings.require_api_key()
+
+    # This app is internet-reachable, so refuse to run without a gate (D11).
+    settings.require_app_password()
+
+    if not settings.session_secret.strip():
+        log.warning(
+            "SESSION_SECRET is not set; generating a temporary one. "
+            "Sessions will not survive a restart - set SESSION_SECRET to fix."
+        )
+
+    if not settings.cookie_secure:
+        log.warning(
+            "Session cookie is NOT marked Secure (GRAPHRAG_COOKIE_SECURE is off). "
+            "Correct for local http; never leave this off in production."
+        )
+
     settings.ensure_dirs()
 
     log.info("LLM provider: %s", settings.provider)
@@ -82,6 +105,95 @@ async def health() -> dict:
             "models_configured": bool(settings.extraction_model and settings.answer_model),
         }
     )
+
+
+class LoginRequest(BaseModel):
+    """The login form's only field."""
+
+    password: str = Field(min_length=1)
+
+
+@app.middleware("http")
+async def require_session(request: Request, call_next):
+    """Refuse anything that is not explicitly public (D11).
+
+    Gated by default: a route added later is protected unless someone
+    deliberately adds it to the public list.
+    """
+    if auth.is_public_path(request.url.path):
+        return await call_next(request)
+
+    if auth.is_valid_session(request.cookies.get(SESSION_COOKIE_NAME)):
+        return await call_next(request)
+
+    return JSONResponse(
+        status_code=401,
+        content={
+            "ok": False,
+            "data": None,
+            "error": {
+                "code": "not_authenticated",
+                "message": "This app is password protected.",
+                "hint": "Log in first.",
+            },
+        },
+    )
+
+
+@app.post("/api/login")
+async def login(request: Request, body: LoginRequest) -> JSONResponse:
+    """Exchange the shared password for a session cookie."""
+    caller = auth.client_ip(request)
+
+    decision = auth.login_limiter.allow(caller)
+    if not decision.allowed:
+        log.warning("Login rate limit hit for %s", caller)
+        return JSONResponse(
+            status_code=429,
+            headers={"Retry-After": str(int(decision.retry_after) + 1)},
+            content={
+                "ok": False,
+                "data": None,
+                "error": {
+                    "code": "too_many_attempts",
+                    "message": "Too many login attempts.",
+                    "hint": f"Try again in about {int(decision.retry_after) + 1} seconds.",
+                },
+            },
+        )
+
+    if not auth.verify_password(body.password):
+        log.warning("Failed login from %s", caller)
+        return JSONResponse(
+            status_code=401,
+            content={
+                "ok": False,
+                "data": None,
+                "error": {
+                    "code": "bad_password",
+                    "message": "That password is not correct.",
+                    "hint": None,
+                },
+            },
+        )
+
+    # A correct password clears the attempt counter, so normal use is never
+    # throttled by someone else's earlier typos from the same address.
+    auth.login_limiter.reset(caller)
+
+    response = JSONResponse(content=ok({"authenticated": True}))
+    response.set_cookie(value=auth.make_session_token(), **auth.session_cookie_kwargs())
+    log.info("Login succeeded for %s", caller)
+    return response
+
+
+@app.post("/api/logout")
+async def logout() -> JSONResponse:
+    """Clear the session cookie."""
+    response = JSONResponse(content=ok({"authenticated": False}))
+    flags = auth.session_cookie_kwargs()
+    response.delete_cookie(key=flags["key"], path=flags["path"])
+    return response
 
 
 @app.post("/api/documents")

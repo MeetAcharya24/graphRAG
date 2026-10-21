@@ -40,5 +40,10 @@ def test_root_serves_placeholder_page(client) -> None:
     assert "GraphRAG" in response.text
 
 
-def test_unknown_api_route_is_404(client) -> None:
-    assert client.get("/api/does-not-exist").status_code == 404
+def test_an_unknown_api_route_is_gated_before_it_is_404(client) -> None:
+    """Gated by default (D11): the gate answers before routing does."""
+    assert client.get("/api/does-not-exist").status_code == 401
+
+
+def test_an_unknown_api_route_is_404_once_logged_in(auth_client) -> None:
+    assert auth_client.get("/api/does-not-exist").status_code == 404

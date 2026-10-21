@@ -1,5 +1,8 @@
 """Phase 1: the upload endpoint.
 
+Uses `auth_client` throughout: the endpoint sits behind the password gate
+(D11), and the gate itself is tested in test_auth.py.
+
 PLAN.md Phase 1 is done when POST /api/documents returns
 {doc_id, filename, chunk_count}.
 """
@@ -16,6 +19,8 @@ LONG_BODY = ("Helios Labs is a compiler company. " * 60).encode("utf-8")
 
 
 def _upload(client, filename: str, data: bytes, content_type: str = "text/plain"):
+    """`client` here is whichever fixture the test passes in - normally the
+    authenticated one, since the endpoint is gated."""
     return client.post(
         "/api/documents", files={"file": (filename, data, content_type)}
     )
@@ -24,8 +29,8 @@ def _upload(client, filename: str, data: bytes, content_type: str = "text/plain"
 # --- the happy path -------------------------------------------------------
 
 
-def test_uploading_a_text_file_returns_the_document_summary(client) -> None:
-    response = _upload(client, "notes.txt", LONG_BODY)
+def test_uploading_a_text_file_returns_the_document_summary(auth_client) -> None:
+    response = _upload(auth_client, "notes.txt", LONG_BODY)
 
     assert response.status_code == 200
     body = response.json()
@@ -38,34 +43,34 @@ def test_uploading_a_text_file_returns_the_document_summary(client) -> None:
     assert data["chunk_count"] >= 1
 
 
-def test_uploading_a_markdown_file_works(client) -> None:
-    response = _upload(client, "brief.md", b"# Title\n\nSome content here.")
+def test_uploading_a_markdown_file_works(auth_client) -> None:
+    response = _upload(auth_client, "brief.md", b"# Title\n\nSome content here.")
 
     assert response.status_code == 200
     assert response.json()["data"]["chunk_count"] == 1
 
 
-def test_uploading_a_pdf_works(client) -> None:
+def test_uploading_a_pdf_works(auth_client) -> None:
     pdf = build_text_pdf("Northwind Systems acquired Helios Labs")
 
-    response = _upload(client, "deal.pdf", pdf, "application/pdf")
+    response = _upload(auth_client, "deal.pdf", pdf, "application/pdf")
 
     assert response.status_code == 200
     assert response.json()["data"]["chunk_count"] >= 1
 
 
-def test_a_long_document_reports_several_chunks(client) -> None:
+def test_a_long_document_reports_several_chunks(auth_client) -> None:
     body = (" ".join(f"word{i:04d}" for i in range(1200))).encode("utf-8")
 
-    response = _upload(client, "long.txt", body)
+    response = _upload(auth_client, "long.txt", body)
 
     assert response.json()["data"]["chunk_count"] > 1
 
 
-def test_re_uploading_the_same_file_returns_the_same_doc_id(client) -> None:
+def test_re_uploading_the_same_file_returns_the_same_doc_id(auth_client) -> None:
     """Journey 2: identical content is one document, not two."""
-    first = _upload(client, "notes.txt", LONG_BODY).json()["data"]
-    second = _upload(client, "renamed.txt", LONG_BODY).json()["data"]
+    first = _upload(auth_client, "notes.txt", LONG_BODY).json()["data"]
+    second = _upload(auth_client, "renamed.txt", LONG_BODY).json()["data"]
 
     assert first["doc_id"] == second["doc_id"]
 
@@ -73,8 +78,8 @@ def test_re_uploading_the_same_file_returns_the_same_doc_id(client) -> None:
 # --- failures explain themselves -----------------------------------------
 
 
-def test_an_unsupported_file_type_is_rejected_with_415(client) -> None:
-    response = _upload(client, "sheet.xlsx", b"whatever")
+def test_an_unsupported_file_type_is_rejected_with_415(auth_client) -> None:
+    response = _upload(auth_client, "sheet.xlsx", b"whatever")
 
     assert response.status_code == 415
     error = response.json()["error"]
@@ -82,31 +87,31 @@ def test_an_unsupported_file_type_is_rejected_with_415(client) -> None:
     assert ".pdf" in error["hint"]
 
 
-def test_an_empty_file_is_rejected_with_422(client) -> None:
-    response = _upload(client, "empty.txt", b"")
+def test_an_empty_file_is_rejected_with_422(auth_client) -> None:
+    response = _upload(auth_client, "empty.txt", b"")
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "empty_document"
 
 
-def test_a_scanned_pdf_is_rejected_and_mentions_scanning(client) -> None:
-    response = _upload(client, "scan.pdf", build_blank_pdf(2), "application/pdf")
+def test_a_scanned_pdf_is_rejected_and_mentions_scanning(auth_client) -> None:
+    response = _upload(auth_client, "scan.pdf", build_blank_pdf(2), "application/pdf")
 
     assert response.status_code == 422
     assert "scan" in response.json()["error"]["hint"].lower()
 
 
-def test_an_oversized_upload_is_rejected_with_413(client) -> None:
+def test_an_oversized_upload_is_rejected_with_413(auth_client) -> None:
     from app.config import MAX_UPLOAD_BYTES
 
-    response = _upload(client, "huge.txt", b"x" * (MAX_UPLOAD_BYTES + 1))
+    response = _upload(auth_client, "huge.txt", b"x" * (MAX_UPLOAD_BYTES + 1))
 
     assert response.status_code == 413
     assert response.json()["error"]["code"] == "upload_too_large"
 
 
-def test_a_request_with_no_file_is_rejected(client) -> None:
-    response = client.post("/api/documents")
+def test_a_request_with_no_file_is_rejected(auth_client) -> None:
+    response = auth_client.post("/api/documents")
 
     assert response.status_code == 422
 
@@ -114,8 +119,8 @@ def test_a_request_with_no_file_is_rejected(client) -> None:
 # --- the error envelope stays consistent ---------------------------------
 
 
-def test_errors_use_the_same_envelope_as_successes(client) -> None:
-    body = _upload(client, "sheet.xlsx", b"whatever").json()
+def test_errors_use_the_same_envelope_as_successes(auth_client) -> None:
+    body = _upload(auth_client, "sheet.xlsx", b"whatever").json()
 
     assert set(body) == {"ok", "data", "error"}
     assert body["ok"] is False
