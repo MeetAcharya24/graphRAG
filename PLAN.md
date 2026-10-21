@@ -1,6 +1,6 @@
 # Implementation Plan: GraphRAG Multi-Hop Q&A App
 
-**Project:** `D:\GraphRAG` · **Complexity:** LARGE (~34–44 h remaining) · **Target:** publicly hosted on Replit (free Starter)
+**Project:** `D:\GraphRAG` · **Complexity:** LARGE (~34–44 h remaining) · **Target:** publicly hosted on Render (free web service)
 
 **Revision history**
 - 2026-10-19 — approved as a localhost app on the Anthropic Claude API.
@@ -10,12 +10,15 @@
   password gate + rate limiting, background ingestion, and a Replit deploy phase.
 - 2026-10-21 — quota budget fixed (D14): 1 MB uploads, 200-chunk ceiling, batched embeddings
   and batched extraction, so one document costs ~40-50 API calls rather than thousands.
+- 2026-10-21 — **host changed from Replit to Render (D15)** after the Replit smoke test failed:
+  free-plan preview is paywalled and Deploy is a paid upgrade. The decision to test first,
+  before building on the assumption, is what caught it.
 
 ## Approved decisions
 
 | # | Decision |
 |---|---|
-| D1 | Local virtualenv uses **Python 3.13**. Originally because torch/chromadb wheels lagged 3.15; with torch removed (D8) this constraint is soft, but 3.13 stays for reproducibility. Replit supplies its own interpreter — Phase 12 pins it. |
+| D1 | Local virtualenv uses **Python 3.13**. Originally because torch/chromadb wheels lagged 3.15; with torch removed (D8) this constraint is soft, but 3.13 stays for reproducibility. Render builds with its own interpreter — `.python-version` pins it (D15). |
 | D2 | Entity deduplication ships **layers 1–5 only**. The grey-band LLM tiebreak (layer 6) is deferred, not deleted — the resolver keeps the seam for it. |
 | D3 | This plan is saved here, at `D:\GraphRAG\PLAN.md`. |
 | D4 | **Model IDs are discovered, never guessed.** `python -m app.llm.models` queries the active provider's models-list endpoint with the user's own key, prints the candidates, and `--write` stores the newest stable id per tier in `config.py`. ✅ Done. |
@@ -27,7 +30,8 @@
 | **D10** | **No local disk for data.** Uploads are read into memory, chunked, embedded, and written to Neo4j; nothing is persisted to the filesystem. Max upload **1 MB** (see D14). The `data/` directory and the disk-backed extraction cache, merge log, and dedup-candidate files are removed — their state moves into Neo4j or into logs. |
 | **D11** | **Public access is gated.** A single shared password (`APP_PASSWORD` in env) protects every route except `/api/health` and the login page, and per-IP rate limiting caps requests so a stranger cannot drain the Gemini free quota. |
 | **D12** | **Ingestion runs as a background job.** `POST /api/documents` returns a `job_id` immediately; the client polls `GET /api/jobs/{job_id}`. Embedding and extraction of a large document take minutes, which no HTTP request should hold open. |
-| **D13** | **Deploy target is Replit, free Starter plan**, via GitHub import, with secrets set in Replit's Secrets panel. Phase 12 is a beginner-level step-by-step guide. **A deployment smoke test runs first**, against the app as it stands, to settle the free-plan question before more phases are built (see §5). |
+| ~~D13~~ | ~~Deploy target is Replit, free Starter plan.~~ **Superseded by D15** — the smoke test proved the free plan cannot host publicly. The principle survives: a deployment smoke test runs before phases are built on top of a hosting assumption. |
+| **D15** | **Deploy target is Render's free web service**, not Replit. **Evidence (2026-10-21):** the Replit free plan exhausted its daily credit mid-setup, its preview returned *"Preview unavailable, unlock full preview access with Core"*, and Deploy required a paid upgrade — so no public URL was reachable at all. Render free gives a real public HTTPS URL. **Its limits, accepted:** 512 MB RAM, **spins down after ~15 min idle with a ~1 min cold start**, and an ephemeral filesystem — which costs nothing here, because D10 already keeps all data in Neo4j. Deployment is from the same GitHub repo; secrets go in Render's Environment settings, never in the repo. |
 | **D14** | **Quota budget: one document costs ~40–50 API calls, not thousands.** Max upload **1 MB** (not 5), hard ceiling **200 chunks per document**, embeddings batched (`EMBEDDING_BATCH_SIZE`, many chunks per call), and **extraction batched at ~5 chunks per call** (`EXTRACTION_BATCH_SIZE`). Budget for a full 200-chunk document: ~2 embedding calls + 40 extraction calls ≈ 42, plus 1 embedding per question. Exceeding the chunk ceiling is a clear error, not a silent truncation. |
 
 ### What D8–D10 remove
@@ -56,7 +60,7 @@
 | R9 | Sample test set: 3 small docs, one question needing all three | `tests/fixtures/docs/` — a 3-hop chain split across files |
 | R10 | Tests for each part | pytest per phase; `FakeLLM`, `FakeEmbedder`, and in-memory stores keep the suite offline and free |
 | R11 | Single-page UI | Static HTML/CSS/vanilla JS served by FastAPI — no build step |
-| R12 | Free to run **and free to host** | Gemini free tier + Neo4j AuraDB Free + Replit free Starter. No paid service anywhere. |
+| R12 | Free to run **and free to host** | Gemini free tier + Neo4j AuraDB Free + Render free web service. No paid service anywhere. |
 | **R13** | **Strangers cannot use my quota** | Shared-password gate + per-IP rate limiting (D11) |
 | **R14** | **Uploads do not block or time out** | Background job + status polling (D12) |
 
@@ -69,7 +73,8 @@ D:\GraphRAG\
 ├── .env                      GEMINI_API_KEY, NEO4J_*, APP_PASSWORD   (gitignored)
 ├── .env.example              committed template
 ├── requirements.txt          no torch, no chromadb, no networkx
-├── .replit                   Replit run config (Phase 12)
+├── render.yaml               Render service definition (Phase 12)
+├── .python-version           pins the interpreter for Render's build
 ├── PLAN.md
 ├── app/
 │   ├── main.py               FastAPI app, routes, middleware order
@@ -372,10 +377,11 @@ so nobody can hammer it.*
 - `app/security/rate_limit.py`: per-IP token bucket — a generous limit for reads and a strict one for
   the two endpoints that spend quota (`/api/documents`, `/api/ask`). Exceeding it returns 429 with a
   `Retry-After`.
-- **Client IP behind a proxy:** Replit terminates TLS upstream, so the socket peer is the proxy. The
-  limiter must read the forwarded header and trust it **only** from the expected proxy — otherwise
-  anyone can spoof an IP and bypass the limit entirely. Replit's actual headers must be verified in
-  Phase 12 rather than guessed now.
+- **Client IP behind a proxy:** Render terminates TLS at its edge, so the socket peer is Render's
+  proxy, not the visitor. The limiter must read the forwarded header and trust it **only** from the
+  expected proxy — otherwise anyone can spoof an IP and bypass the limit entirely. Render's actual
+  header (`X-Forwarded-For`, and whether it appends or replaces) must be verified against the live
+  service rather than guessed now.
 - Login attempts are themselves rate-limited, so the password cannot be brute-forced.
 
 **Test:** every protected route returns 401 without a cookie and 200 with one; a wrong password is
@@ -424,30 +430,41 @@ is the proof the graph earns its keep.
 **Hardening:** filename sanitization; `DELETE /api/documents/{doc_id}`; `/api/health` reporting
 database connectivity; structured request logging; README quickstart.
 
-### Phase 12 — Deploy to Replit *(new — D13)*
+### Phase 12 — Deploy to Render *(revised — D15)*
 
-*In simple words: put the code on GitHub, tell Replit to run it, paste the secrets in, press Run.*
+*In simple words: point Render at the GitHub repo, paste the secrets into its settings, and it gives
+you a public web address.*
 
-A beginner step-by-step guide, written out in full:
+Replit was tried first and rejected (D15): its free plan paywalls the preview and charges for Deploy,
+so no public URL was reachable. Render's free web service gives a real public HTTPS URL.
 
-1. **Push to GitHub** — create an empty repo, `git remote add origin …`, `git push -u origin master`.
-   Confirm `.env` is absent from the repo and that `.gitignore` covers it.
-2. **Import into Replit** — Create App → Import from GitHub → pick the repo.
-3. **Configure the run command** — `.replit` with
-   `uvicorn app.main:app --host 0.0.0.0 --port $PORT`. Binding `0.0.0.0` and reading `$PORT` is what
-   makes the app reachable; `127.0.0.1` or a hardcoded port looks exactly like a broken deploy.
-4. **Pin the Python version**, so Replit does not choose a different one than local.
-5. **Set Secrets** (Replit's Secrets panel — never in the repo): `GEMINI_API_KEY`, `NEO4J_URI`,
-   `NEO4J_USERNAME`, `NEO4J_PASSWORD`, `APP_PASSWORD`, `SESSION_SECRET`.
-6. **First run** — watch the log for the three startup checks (Gemini key, Neo4j connectivity,
-   `APP_PASSWORD` present), then open the public URL and log in.
-7. **Smoke test the deployed app** — upload one fixture document, poll to completion, ask the 3-hop
+The beginner step-by-step guide, written out in full:
+
+1. **The GitHub repo** — already done: `MeetAcharya24/graphRAG` (private), default branch `master`.
+   `.env` is absent from it and `.gitignore` covers it, verified against the pushed tree.
+2. **Create the service** — render.com → New → Web Service → connect GitHub → pick the repo.
+   Render asks for GitHub access; grant it to that one repository only.
+3. **Settings Render needs**, all of which `render.yaml` also declares:
+   - Runtime **Python**, Branch **master**, Plan **Free**
+   - Build command: `pip install -r requirements.txt`
+   - Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+     `0.0.0.0` and `$PORT` are what make it reachable; `127.0.0.1` or a fixed port is the classic
+     deploy that runs fine and answers nobody.
+4. **Set environment variables** in Render's Environment tab — never in the repo:
+   `GEMINI_API_KEY`, then later `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`, `APP_PASSWORD`,
+   `SESSION_SECRET`.
+5. **First deploy** — watch the log for the startup checks (Gemini key present, later Neo4j
+   connectivity and the password gate armed), then open the `onrender.com` URL.
+6. **Smoke test the deployed app** — upload one fixture document, poll to completion, ask the 3-hop
    question, confirm the citations and path render.
-8. **What to expect from the free plan** — idle sleep and cold starts, the ephemeral filesystem
-   (which is why D10 exists), and where to find the logs.
+7. **What to expect from the free plan** — the service **sleeps after ~15 minutes idle** and takes
+   about a minute to wake, so the first visit after a quiet spell is slow; the filesystem is wiped on
+   every deploy and restart, which costs nothing because all data lives in Neo4j (D10).
+8. **Keeping it awake (optional)** — an external uptime pinger every 10 minutes prevents sleep.
+   Note the trade-off honestly: it also consumes the free tier's monthly instance hours faster.
 
-**Test:** a deploy checklist in the README, plus a `GET /api/health` that reports provider, model
-ids, database connectivity, and whether the password gate is armed — one request that proves the
+**Test:** a deploy checklist in the README, plus a `GET /api/health` reporting provider, model ids,
+database connectivity, and whether the password gate is armed — one request that proves the
 deployment is wired correctly.
 
 ---
@@ -461,7 +478,7 @@ deployment is wired correctly.
 built against stubbed JSON once Phase 2 is done.
 
 **External accounts needed:** a Gemini API key (have it), a **Neo4j AuraDB Free instance** (Phase 3),
-a **GitHub repo**, and a **Replit account** (Phase 12).
+a **GitHub repo** (done — `MeetAcharya24/graphRAG`), and a **Render account** (Phase 12).
 
 **`requirements.txt` after D8/D9:** fastapi, uvicorn[standard], python-multipart, pydantic,
 pydantic-settings, python-dotenv, google-genai, anthropic, **neo4j**, pypdf, rapidfuzz, itsdangerous,
@@ -474,12 +491,15 @@ scikit-learn, networkx.
 
 | Risk | Likelihood | Severity | Mitigation |
 |---|---|---|---|
-| **Replit's free Starter plan may not provide a persistent public URL.** Free Replit hosting has historically meant a dev-mode URL that sleeps, with always-on Deployments as a paid feature. This is the single assumption that could invalidate the goal. | **Unknown — must verify** | **High** | Verify **before** investing in Phase 12 by deploying the app as it stands today. If the free plan cannot host publicly, the code is unaffected — it is a standard ASGI app, and the Render / Fly.io / Hugging Face Spaces free tiers take it unchanged. Only Phase 12's guide would differ. |
+| ~~Replit's free plan may not provide a persistent public URL~~ — **confirmed true, 2026-10-21.** Free credit exhausted mid-setup, preview paywalled behind Core, Deploy paid-only. | Resolved | — | Host switched to Render (D15). The code needed no change: it is a plain ASGI app. This is exactly what the smoke-test-first decision was for. |
+| **Render free spins down after ~15 min idle**, with a ~1 min cold start | Certain (accepted) | Medium | The UI must show a "waking up" state rather than appear broken, and the first request after sleep needs a generous client timeout. **Interacts with D12:** a sleep mid-ingestion kills the background job and the in-memory job registry, so the job endpoint must report an unknown job honestly, and the UI must offer a re-upload. |
+| Render free caps RAM at 512 MB | Certain (accepted) | Low | Comfortable now that torch is gone (D8): the slim dependency set plus a 1 MB in-memory upload fits easily. Embeddings are batched, so peak memory stays bounded. |
+| Python 3.13 may not be offered by Render's builder | Low | Low | `.python-version` pins it; if the build rejects it, drop to 3.12 — nothing in the code needs 3.13 now that torch (the original reason, D1) is gone. |
 | ~~A 5 MB document can exhaust the free quota in one upload~~ — **resolved by D14.** | Low | Medium | 1 MB cap + 200-chunk ceiling + batched embeddings + 5-chunk extraction batches ≈ 42 calls per document. Job status shows a running count; a daily-quota error stops the job and says why. |
 | Batched extraction mis-attributes a relationship to the wrong chunk | Medium | High | Labelled chunks in the prompt, `source_chunk_index` per triple, server-side range check that drops out-of-range triples; batch size is a constant that can drop to 1. Tested with a deliberately out-of-range index. |
 | Gemini embedding model id or dimension guessed wrong | Low (by design) | High | D8: discovered from the API, dimension measured from a probe. A wrong dimension means rebuilding the Neo4j vector index. |
 | AuraDB Free pauses when idle, or its caps are tighter than expected | Medium | Medium | Verify in Phase 3; startup connectivity check with a clear "database may be paused" message; the UI surfaces it as a real state, not a generic error. |
-| Rate limiter bypassed via a spoofed forwarded header | Medium | Medium | Trust the forwarded header only from the expected proxy; verify Replit's actual headers in Phase 12. Tested explicitly. |
+| Rate limiter bypassed via a spoofed forwarded header | Medium | Medium | Trust the forwarded header only from the expected proxy; verify Render's actual `X-Forwarded-For` behaviour against the live service. Tested explicitly. |
 | In-memory job registry loses state on restart | High (accepted) | Low | Documented; status reports "unknown job" rather than lying. Sleep-prone free hosting makes this visible, so the UI handles it. |
 | LLM invents citations | High | High | Phase 7 server-side id validation — invented ids are dropped, never rendered. |
 | Dedup over-merges distinct entities | Medium | High | Type-gated, conservative thresholds, ambiguous matches rejected, merge decisions logged; "two John Smiths" is a named test. |
@@ -507,7 +527,7 @@ scikit-learn, networkx.
 | 9 Password gate + rate limiting | 3 h |
 | 10 UI | 4–5 h |
 | 11 Eval set + hardening | 3 h |
-| 12 Replit deploy + guide | 2–3 h |
+| 12 Render deploy + guide | 2–3 h |
 | **Remaining** | **~34–44 h** |
 
 Standards: 80% coverage minimum, files under the 800-line ceiling, functions under 50 lines, frozen
