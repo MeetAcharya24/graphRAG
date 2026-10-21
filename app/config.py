@@ -80,6 +80,18 @@ RETRY_MAX_ATTEMPTS = 5
 RETRY_BASE_DELAY_SECONDS = 2.0
 RETRY_MAX_DELAY_SECONDS = 60.0
 
+# --- Access control (D11) --------------------------------------------------
+SESSION_COOKIE_NAME = "graphrag_session"
+SESSION_TOKEN_PAYLOAD = "authenticated"
+SESSION_TTL_SECONDS = 12 * 60 * 60
+# Browsers refuse a Secure cookie over plain http, so local development turns
+# this off via GRAPHRAG_COOKIE_SECURE=false. Production keeps it on.
+SESSION_COOKIE_SECURE = True
+# Login attempts allowed per IP per window, so the password cannot be guessed
+# at machine speed.
+LOGIN_MAX_ATTEMPTS = 8
+LOGIN_WINDOW_SECONDS = 300
+
 # --- Logging ---------------------------------------------------------------
 VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 
@@ -122,6 +134,11 @@ class Settings(BaseSettings):
     # Provider-agnostic overrides; win over the per-provider values above.
     extraction_model_override: str = Field(default="", alias="GRAPHRAG_EXTRACTION_MODEL")
     answer_model_override: str = Field(default="", alias="GRAPHRAG_ANSWER_MODEL")
+
+    app_password: str = Field(default="", alias="APP_PASSWORD")
+    session_secret: str = Field(default="", alias="SESSION_SECRET")
+    cookie_secure: bool = Field(default=SESSION_COOKIE_SECURE, alias="GRAPHRAG_COOKIE_SECURE")
+    trust_proxy_headers: bool = Field(default=False, alias="GRAPHRAG_TRUST_PROXY")
 
     data_dir: Path = Field(default=Path("data"), alias="GRAPHRAG_DATA_DIR")
     log_level: str = Field(default="INFO", alias="GRAPHRAG_LOG_LEVEL")
@@ -247,6 +264,24 @@ class Settings(BaseSettings):
                 ),
             )
         return key
+
+    def require_app_password(self) -> str:
+        """Return the gate password, or refuse to run.
+
+        This app is reachable from the public internet, so starting without a
+        gate would expose the upload endpoint and the API quota behind it. That
+        is worth failing loudly for, not warning about.
+        """
+        password = self.app_password.strip()
+        if not password:
+            raise ConfigError(
+                "APP_PASSWORD is not set, so the app would be open to anyone.",
+                hint=(
+                    "Set APP_PASSWORD in .env locally, or in the host's "
+                    "environment settings when deployed."
+                ),
+            )
+        return password
 
     def require_models(self) -> tuple[str, str]:
         """Return (extraction_model, answer_model) or explain how to get them."""

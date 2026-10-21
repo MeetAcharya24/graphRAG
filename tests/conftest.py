@@ -23,15 +23,23 @@ _SETTINGS_ENV_VARS = (
     "GRAPHRAG_ANSWER_MODEL",
     "GRAPHRAG_DATA_DIR",
     "GRAPHRAG_LOG_LEVEL",
+    "APP_PASSWORD",
+    "SESSION_SECRET",
+    "GRAPHRAG_COOKIE_SECURE",
+    "GRAPHRAG_TRUST_PROXY",
 )
 
 
 def _clear_caches() -> None:
     from app.config import get_settings
     from app.llm.factory import get_provider
+    from app.security.auth import login_limiter
 
     get_settings.cache_clear()
     get_provider.cache_clear()
+    # Module-level state: without this, one test's failed logins would throttle
+    # the next test's.
+    login_limiter.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -49,6 +57,11 @@ def isolated_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterat
     monkeypatch.setenv("GEMINI_EXTRACTION_MODEL", "test-flash-lite-model")
     monkeypatch.setenv("GEMINI_ANSWER_MODEL", "test-flash-model")
     monkeypatch.setenv("GRAPHRAG_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("APP_PASSWORD", "test-password-not-real")
+    monkeypatch.setenv("SESSION_SECRET", "test-session-secret-not-real")
+    # TestClient speaks plain http, and a browser-style client will not store a
+    # Secure cookie over http.
+    monkeypatch.setenv("GRAPHRAG_COOKIE_SECURE", "false")
 
     # The real .env must not be consulted, even for vars we did not set.
     from app.config import Settings
@@ -69,6 +82,18 @@ def client():
 
     with TestClient(app) as test_client:
         yield test_client
+
+
+@pytest.fixture
+def auth_client(client):
+    """A client that has already logged in through the password gate.
+
+    Most routes are gated (D11), so tests of real functionality need this.
+    `client` stays anonymous so the gate itself can be tested.
+    """
+    response = client.post("/api/login", json={"password": "test-password-not-real"})
+    assert response.status_code == 200, "login fixture failed"
+    return client
 
 
 @pytest.fixture
