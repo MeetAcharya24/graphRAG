@@ -29,7 +29,7 @@ def configure_logging(level: str = "INFO") -> None:
     root.setLevel(level.upper())
 
     # These are chatty on startup and tell us nothing we want.
-    for noisy in ("httpx", "httpx2", "chromadb", "sentence_transformers", "urllib3"):
+    for noisy in ("httpx", "httpx2", "urllib3", "neo4j", "google_genai"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
     _CONFIGURED = True
