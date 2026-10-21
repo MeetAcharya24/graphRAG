@@ -2,6 +2,41 @@
 
 **Project:** `D:\GraphRAG` · **Complexity:** LARGE (~34–44 h remaining) · **Target:** publicly hosted on Render (free web service)
 
+---
+
+## Where we stopped — 2026-10-21
+
+**State:** 181 tests passing. Phases 0 and 1 complete; Phase 9 (password gate) mostly complete and
+brought forward. `master` and `origin/master` in sync at `2afc79c`.
+
+**Deployed:** https://graphrag-bb8z.onrender.com — Render free web service, no card required.
+Verified live: `/api/health`, document upload, idempotent `doc_id`, the 415/413 rejection paths, and
+the password gate refusing un-authenticated requests. Cold start measured at **42 s** after 17 min
+idle (1.3 s warm).
+
+**⚠️ Unconfirmed:** the deploy of `2afc79c` (the `itsdangerous` fix). The previous deploy failed with
+`ModuleNotFoundError` because the package was never declared in `requirements.txt`; the fix is pushed
+and verified in a clean venv locally, but **nobody has confirmed the Render deploy went green.**
+Check that first next session.
+
+**Open items, in order:**
+
+1. Confirm the `2afc79c` deploy succeeded; if not, read the log — the fix addressed the one cause
+   that was reproducible, and a second could be hiding behind it.
+2. Add two remaining Render environment variables: `SESSION_SECRET` (any long random string — without
+   it the 42 s sleep cycle logs you out every wake) and `GRAPHRAG_COOKIE_SECURE=true`.
+3. Create a **Neo4j AuraDB Free** instance — needed before Phase 3, and it shows the password only
+   once.
+
+**Next phase: Phase 2** — embeddings via the Gemini API. Discover the embedding model from the API
+and *measure* its vector dimension with a probe, because Phase 3 fixes that dimension into the Neo4j
+vector index and a wrong value means rebuilding it.
+
+**Standing caveat:** the live app is gated now, but `/api/ask` does not exist yet, so nothing on it
+can spend Gemini quota.
+
+---
+
 **Revision history**
 - 2026-10-19 — approved as a localhost app on the Anthropic Claude API.
 - 2026-10-19 — switched to the free Google Gemini API (D5–D7).
