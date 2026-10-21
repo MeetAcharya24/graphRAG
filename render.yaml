@@ -1,0 +1,39 @@
+# Render service definition (decision D15).
+#
+# This file lets Render recreate the service from scratch ("Blueprint"), and it
+# documents the exact settings if you create the service by hand in the
+# dashboard instead. Either route works.
+services:
+  - type: web
+    name: graphrag
+    runtime: python
+    plan: free
+    branch: master
+
+    buildCommand: pip install -r requirements.txt
+
+    # --host 0.0.0.0 listens on all interfaces, and $PORT is the port Render
+    # assigns. Binding 127.0.0.1 or a fixed port produces a service that runs
+    # perfectly and answers nobody - the classic broken deploy.
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+
+    # Render pings this to decide whether the service came up.
+    healthCheckPath: /api/health
+
+    envVars:
+      # sync: false means "ask me for this value, never store it in git".
+      # Set it in Render's Environment tab.
+      - key: GEMINI_API_KEY
+        sync: false
+
+      # Added in later phases; listed here so the set is visible in one place.
+      # - key: NEO4J_URI
+      #   sync: false
+      # - key: NEO4J_USERNAME
+      #   sync: false
+      # - key: NEO4J_PASSWORD
+      #   sync: false
+      # - key: APP_PASSWORD
+      #   sync: false
+      # - key: SESSION_SECRET
+      #   generateValue: true
