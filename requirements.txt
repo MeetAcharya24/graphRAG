@@ -25,6 +25,10 @@ pypdf>=5.1
 # --- dedup ---
 rapidfuzz>=3.10
 
+# --- access control (D11) ---
+# Signs the session cookie. Imported by app/security/auth.py.
+itsdangerous>=2.2
+
 # --- tests ---
 pytest>=8.3
 pytest-asyncio>=0.24
