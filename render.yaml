@@ -26,6 +26,24 @@ services:
       - key: GEMINI_API_KEY
         sync: false
 
+      # The app refuses to start without this (D11).
+      - key: APP_PASSWORD
+        sync: false
+
+      # Signs the session cookie. Render can generate it; a stable value means
+      # sessions survive the restarts that free-tier sleep causes.
+      - key: SESSION_SECRET
+        generateValue: true
+
+      # Render terminates TLS at its edge, so the socket peer is its proxy.
+      # Without this, every visitor shares one rate-limit bucket.
+      - key: GRAPHRAG_TRUST_PROXY
+        value: "true"
+
+      # Production is https, so the session cookie must be https-only.
+      - key: GRAPHRAG_COOKIE_SECURE
+        value: "true"
+
       # Added in later phases; listed here so the set is visible in one place.
       # - key: NEO4J_URI
       #   sync: false

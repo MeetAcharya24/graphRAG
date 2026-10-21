@@ -10,6 +10,8 @@
   password gate + rate limiting, background ingestion, and a Replit deploy phase.
 - 2026-10-21 — quota budget fixed (D14): 1 MB uploads, 200-chunk ceiling, batched embeddings
   and batched extraction, so one document costs ~40-50 API calls rather than thousands.
+- 2026-10-21 — Render smoke test passed: public URL live, free, no card. Cold start measured at
+  **42 s** after 17 min idle. Password gate (D11) brought forward from Phase 9.
 - 2026-10-21 — **host changed from Replit to Render (D15)** after the Replit smoke test failed:
   free-plan preview is paywalled and Deploy is a paid upgrade. The decision to test first,
   before building on the assumption, is what caught it.
@@ -31,7 +33,7 @@
 | **D11** | **Public access is gated.** A single shared password (`APP_PASSWORD` in env) protects every route except `/api/health` and the login page, and per-IP rate limiting caps requests so a stranger cannot drain the Gemini free quota. |
 | **D12** | **Ingestion runs as a background job.** `POST /api/documents` returns a `job_id` immediately; the client polls `GET /api/jobs/{job_id}`. Embedding and extraction of a large document take minutes, which no HTTP request should hold open. |
 | ~~D13~~ | ~~Deploy target is Replit, free Starter plan.~~ **Superseded by D15** — the smoke test proved the free plan cannot host publicly. The principle survives: a deployment smoke test runs before phases are built on top of a hosting assumption. |
-| **D15** | **Deploy target is Render's free web service**, not Replit. **Evidence (2026-10-21):** the Replit free plan exhausted its daily credit mid-setup, its preview returned *"Preview unavailable, unlock full preview access with Core"*, and Deploy required a paid upgrade — so no public URL was reachable at all. Render free gives a real public HTTPS URL. **Its limits, accepted:** 512 MB RAM, **spins down after ~15 min idle with a ~1 min cold start**, and an ephemeral filesystem — which costs nothing here, because D10 already keeps all data in Neo4j. Deployment is from the same GitHub repo; secrets go in Render's Environment settings, never in the repo. |
+| **D15** | **Deploy target is Render's free web service**, not Replit. **Evidence (2026-10-21):** the Replit free plan exhausted its daily credit mid-setup, its preview returned *"Preview unavailable, unlock full preview access with Core"*, and Deploy required a paid upgrade — so no public URL was reachable at all. Render free gives a real public HTTPS URL. **Its limits, measured 2026-10-21:** 512 MB RAM, spins down after ~15 min idle with a **42 s cold start** (measured: 41.96 s after 17 min idle, versus 1.32 s warm), and an ephemeral filesystem — which costs nothing here, because D10 already keeps all data in Neo4j. Deployment is from the same GitHub repo; secrets go in Render's Environment settings, never in the repo. |
 | **D14** | **Quota budget: one document costs ~40–50 API calls, not thousands.** Max upload **1 MB** (not 5), hard ceiling **200 chunks per document**, embeddings batched (`EMBEDDING_BATCH_SIZE`, many chunks per call), and **extraction batched at ~5 chunks per call** (`EXTRACTION_BATCH_SIZE`). Budget for a full 200-chunk document: ~2 embedding calls + 40 extraction calls ≈ 42, plus 1 embedding per question. Exceeding the chunk ceiling is a clear error, not a silent truncation. |
 
 ### What D8–D10 remove
@@ -364,7 +366,13 @@ progress counters are monotonic; a failing chunk does not fail the job but a quo
 unknown job id is a clean 404; the registry evicts by TTL and by size; a 2 MB upload and a
 201-chunk document are both rejected **before any embedding call is made**.
 
-### Phase 9 — Password gate & per-IP rate limiting *(new — D11)*
+### Phase 9 — Password gate & per-IP rate limiting *(new — D11)* — **mostly DONE (2026-10-21)**
+
+> Brought forward because the Render smoke test put the upload endpoint on a public URL.
+> **Done:** the gate, the signed session cookie, login rate limiting, `client_ip` resolution,
+> and startup refusing to run without `APP_PASSWORD` (177 tests).
+> **Still outstanding:** rate limits on the quota-spending routes, which do not exist yet —
+> `/api/ask` arrives in Phase 2. The limiter is already written and tested for them.
 
 *In simple words: one password so only you and whoever you share it with can use the app, plus a cap
 so nobody can hammer it.*
@@ -458,7 +466,7 @@ The beginner step-by-step guide, written out in full:
 6. **Smoke test the deployed app** — upload one fixture document, poll to completion, ask the 3-hop
    question, confirm the citations and path render.
 7. **What to expect from the free plan** — the service **sleeps after ~15 minutes idle** and takes
-   about a minute to wake, so the first visit after a quiet spell is slow; the filesystem is wiped on
+   **about 42 seconds** to wake (measured), so the first visit after a quiet spell is slow; the filesystem is wiped on
    every deploy and restart, which costs nothing because all data lives in Neo4j (D10).
 8. **Keeping it awake (optional)** — an external uptime pinger every 10 minutes prevents sleep.
    Note the trade-off honestly: it also consumes the free tier's monthly instance hours faster.
@@ -492,7 +500,7 @@ scikit-learn, networkx.
 | Risk | Likelihood | Severity | Mitigation |
 |---|---|---|---|
 | ~~Replit's free plan may not provide a persistent public URL~~ — **confirmed true, 2026-10-21.** Free credit exhausted mid-setup, preview paywalled behind Core, Deploy paid-only. | Resolved | — | Host switched to Render (D15). The code needed no change: it is a plain ASGI app. This is exactly what the smoke-test-first decision was for. |
-| **Render free spins down after ~15 min idle**, with a ~1 min cold start | Certain (accepted) | Medium | The UI must show a "waking up" state rather than appear broken, and the first request after sleep needs a generous client timeout. **Interacts with D12:** a sleep mid-ingestion kills the background job and the in-memory job registry, so the job endpoint must report an unknown job honestly, and the UI must offer a re-upload. |
+| **Render free spins down after ~15 min idle**, with a **measured 42 s cold start** | Certain (measured) | Medium | 42 s is long enough that a browser fetch with no feedback looks like a hang, so the UI must show a "waking up, this takes up to a minute" state and set a client timeout above 60 s. **Interacts with D12:** a sleep mid-ingestion kills the background job and the in-memory job registry, so the job endpoint must report an unknown job honestly, and the UI must offer a re-upload. |
 | Render free caps RAM at 512 MB | Certain (accepted) | Low | Comfortable now that torch is gone (D8): the slim dependency set plus a 1 MB in-memory upload fits easily. Embeddings are batched, so peak memory stays bounded. |
 | Python 3.13 may not be offered by Render's builder | Low | Low | `.python-version` pins it; if the build rejects it, drop to 3.12 — nothing in the code needs 3.13 now that torch (the original reason, D1) is gone. |
 | ~~A 5 MB document can exhaust the free quota in one upload~~ — **resolved by D14.** | Low | Medium | 1 MB cap + 200-chunk ceiling + batched embeddings + 5-chunk extraction batches ≈ 42 calls per document. Job status shows a running count; a daily-quota error stops the job and says why. |
