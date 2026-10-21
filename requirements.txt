@@ -14,12 +14,10 @@ google-genai>=2.0
 # --- llm: kept so LLM_PROVIDER=anthropic still works ---
 anthropic>=1.15  # messages.parse(output_format=...) - verified on 1.15.0
 
-# --- retrieval ---
-chromadb>=0.5
-sentence-transformers>=3.3
-
-# --- graph ---
-networkx>=3.4
+# --- retrieval + graph ---
+# Neo4j AuraDB (graph + vector index) arrives in Phase 3, per D9.
+# chromadb / sentence-transformers / networkx were removed by D8/D9:
+# ~700 MB of install that does not fit a free host.
 
 # --- ingestion ---
 pypdf>=5.1
