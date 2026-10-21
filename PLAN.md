@@ -1,18 +1,43 @@
 # Implementation Plan: GraphRAG Multi-Hop Q&A App
 
-**Project:** `D:\GraphRAG` · **Status:** approved 2026-10-19 · **Complexity:** LARGE (~24–32 h)
+**Project:** `D:\GraphRAG` · **Complexity:** LARGE (~34–44 h remaining) · **Target:** publicly hosted on Replit (free Starter)
+
+**Revision history**
+- 2026-10-19 — approved as a localhost app on the Anthropic Claude API.
+- 2026-10-19 — switched to the free Google Gemini API (D5–D7).
+- 2026-10-21 — **re-scoped for public hosting** (D8–D13): Gemini embeddings replace local
+  sentence-transformers, Neo4j AuraDB Free replaces ChromaDB + NetworkX files, no local disk,
+  password gate + rate limiting, background ingestion, and a Replit deploy phase.
+- 2026-10-21 — quota budget fixed (D14): 1 MB uploads, 200-chunk ceiling, batched embeddings
+  and batched extraction, so one document costs ~40-50 API calls rather than thousands.
 
 ## Approved decisions
 
 | # | Decision |
 |---|---|
-| D1 | Virtualenv uses **Python 3.13** (`C:\Users\maste\AppData\Local\Programs\Python\Python313\python.exe`). 3.15 is the machine default but torch/chromadb wheels lag new releases. |
+| D1 | Local virtualenv uses **Python 3.13**. Originally because torch/chromadb wheels lagged 3.15; with torch removed (D8) this constraint is soft, but 3.13 stays for reproducibility. Replit supplies its own interpreter — Phase 12 pins it. |
 | D2 | Entity deduplication ships **layers 1–5 only**. The grey-band LLM tiebreak (layer 6) is deferred, not deleted — the resolver keeps the seam for it. |
 | D3 | This plan is saved here, at `D:\GraphRAG\PLAN.md`. |
-| D4 | **Model IDs are discovered, never guessed.** Phase 0 calls the active provider's models-list endpoint with the user's own key, reports which models that key can access, and writes the newest of each tier into `config.py`. ✅ Done — see D6 for the result. |
+| D4 | **Model IDs are discovered, never guessed.** `python -m app.llm.models` queries the active provider's models-list endpoint with the user's own key, prints the candidates, and `--write` stores the newest stable id per tier in `config.py`. ✅ Done. |
 | D5 | **The LLM provider is swappable.** One interface (`app/llm/base.py:LLMProvider`), selected by `LLM_PROVIDER` in `.env`. **Gemini (free tier) is the default**; the Anthropic implementation is retained so `LLM_PROVIDER=anthropic` switches back in one line. `ANTHROPIC_API_KEY` is **not** required at startup. |
-| D6 | **Free-tier Gemini models only — no Pro** (Pro is paid). Flash-Lite extracts, Flash answers. Ranking is by **version string**, with stable beating preview, because the Gemini models endpoint returns no creation dates. Discovered 2026-10-19: extraction `gemini-3.5-flash-lite`, answers `gemini-3.8-flash`. Image-generation models (`*-flash-image`, "Nano Banana") are excluded by a segment-aware filter — they advertise `generateContent` and would otherwise be selected on version number alone. |
-| D7 | **Free-tier limits are respected.** `EXTRACTION_CONCURRENCY = 2` (not 5); per-minute 429s retry with exponential backoff + jitter, honouring any server `retryDelay`; daily-quota 429s are a distinct, never-retried error that says when quota resets. |
+| D6 | **Free-tier Gemini models only — no Pro** (Pro is paid). Flash-Lite extracts, Flash answers. Ranking is by version string, stable beating preview, because the Gemini models endpoint returns no creation dates. Discovered 2026-10-19: `gemini-3.5-flash-lite`, `gemini-3.8-flash`. Image-generation models are excluded by a segment-aware filter. |
+| D7 | **Free-tier limits are respected.** `EXTRACTION_CONCURRENCY = 2`; per-minute 429s retry with exponential backoff + jitter honouring any server `retryDelay`; daily-quota 429s are a distinct, never-retried error naming when quota resets. |
+| **D8** | **Embeddings come from the Gemini API, not local sentence-transformers.** Removes `torch`, `sentence-transformers`, and `scikit-learn` — roughly 700 MB of install that will not fit a free host. The embedding model id **and its vector dimension are discovered from the API**, never guessed: the dimension is confirmed by embedding a probe string and measuring the result. Same `--write` mechanism as D4. |
+| **D9** | **Neo4j AuraDB Free is the single store** — knowledge graph *and* vector index in one managed database. Replaces ChromaDB and the NetworkX JSON file. Both existing protocols (`GraphStore`, `VectorStore`) stay exactly as designed; Neo4j becomes one implementation behind each. **In-memory fakes implement the same protocols**, so the whole suite runs offline and free, with one opt-in live-database test. |
+| **D10** | **No local disk for data.** Uploads are read into memory, chunked, embedded, and written to Neo4j; nothing is persisted to the filesystem. Max upload **1 MB** (see D14). The `data/` directory and the disk-backed extraction cache, merge log, and dedup-candidate files are removed — their state moves into Neo4j or into logs. |
+| **D11** | **Public access is gated.** A single shared password (`APP_PASSWORD` in env) protects every route except `/api/health` and the login page, and per-IP rate limiting caps requests so a stranger cannot drain the Gemini free quota. |
+| **D12** | **Ingestion runs as a background job.** `POST /api/documents` returns a `job_id` immediately; the client polls `GET /api/jobs/{job_id}`. Embedding and extraction of a large document take minutes, which no HTTP request should hold open. |
+| **D13** | **Deploy target is Replit, free Starter plan**, via GitHub import, with secrets set in Replit's Secrets panel. Phase 12 is a beginner-level step-by-step guide. **A deployment smoke test runs first**, against the app as it stands, to settle the free-plan question before more phases are built (see §5). |
+| **D14** | **Quota budget: one document costs ~40–50 API calls, not thousands.** Max upload **1 MB** (not 5), hard ceiling **200 chunks per document**, embeddings batched (`EMBEDDING_BATCH_SIZE`, many chunks per call), and **extraction batched at ~5 chunks per call** (`EXTRACTION_BATCH_SIZE`). Budget for a full 200-chunk document: ~2 embedding calls + 40 extraction calls ≈ 42, plus 1 embedding per question. Exceeding the chunk ceiling is a clear error, not a silent truncation. |
+
+### What D8–D10 remove
+
+| Removed | Replaced by | Why |
+|---|---|---|
+| `sentence-transformers`, `torch`, `scikit-learn` (~700 MB) | Gemini embeddings API | Install size and RAM a free host cannot provide |
+| `chromadb` | Neo4j vector index | One database instead of two stores; no local persistence directory |
+| `networkx` | Neo4j graph | Same; also removes the single-process write constraint |
+| `data/chroma/`, `data/graph.json`, `data/uploads/`, `data/extraction_cache/`, `merge_log.jsonl`, `dedup_candidates.jsonl` | Neo4j nodes, or structured logs | A free host's filesystem is ephemeral — anything written there is lost on restart |
 
 ---
 
@@ -20,18 +45,20 @@
 
 | # | Requirement | How it is satisfied |
 |---|---|---|
-| R1 | Upload PDF / TXT / MD | `POST /api/documents` → loader → chunker → embed → extract |
-| R2 | Build a knowledge graph of entities + relationships | Extraction-tier LLM per chunk → triples → NetworkX |
-| R3 | Store chunks in a vector index | ChromaDB (persistent, local dir) + sentence-transformers |
-| R4 | Answer by combining vector search **and** 1–3 hop graph traversal | Hybrid retriever: seeds from vector hits → BFS + inter-seed shortest paths |
-| R5 | Answer questions whose evidence spans several documents | Path-driven chunk recovery: every edge carries its source chunk, so hop-2/hop-3 documents enter the context even when vector search ranks them low |
-| R6 | Answers show their work: source docs + graph path | Structured answer with `doc_ids` / `edge_ids`, **server-validated** against what was actually retrieved, rendered as `Sarah Chen —works_at→ Helios Labs —acquired_by→ Northwind Systems` |
+| R1 | Upload PDF / TXT / MD | `POST /api/documents` → loader → chunker → embed → Neo4j (in memory throughout, 1 MB cap, 200-chunk ceiling) |
+| R2 | Build a knowledge graph of entities + relationships | Extraction-tier LLM per chunk → triples → Neo4j |
+| R3 | Store text chunks in a vector index | Neo4j native vector index on `:Chunk(embedding)`, cosine similarity |
+| R4 | Combine vector search **and** 1–3 hop graph traversal | Hybrid retriever: vector hits give seed entities, Cypher walks 1–3 hops and finds inter-seed paths |
+| R5 | Answer questions whose evidence spans several documents | Every relationship stores its `source_chunk_id`, so chunks reached only by traversal enter the context even when vector search ranks them low |
+| R6 | Answers show their work: source docs + graph path | Structured answer with `chunk_ids` / `edge_ids`, **server-validated** against what was retrieved, rendered as `Sarah Chen —works_at→ Helios Labs —acquired_by→ Northwind Systems` |
 | R7 | Entity deduplication | Layered resolver: normalize → alias → fuzzy → embedding (layers 1–5, per D2) |
-| R8 | Graph swappable for Neo4j later | `GraphStore` Protocol; `NetworkXGraphStore` is one implementation, nothing above it imports `networkx` |
-| R9 | Sample test set: 3 small docs, one question needing all three | `tests/fixtures/docs/` — a 3-hop chain, deliberately split across files |
-| R10 | Tests for each part | pytest per phase, with a `FakeLLM` so the suite runs offline and free |
+| R8 | Graph backend swappable | `GraphStore` / `VectorStore` Protocols; Neo4j and in-memory are two implementations each |
+| R9 | Sample test set: 3 small docs, one question needing all three | `tests/fixtures/docs/` — a 3-hop chain split across files |
+| R10 | Tests for each part | pytest per phase; `FakeLLM`, `FakeEmbedder`, and in-memory stores keep the suite offline and free |
 | R11 | Single-page UI | Static HTML/CSS/vanilla JS served by FastAPI — no build step |
-| R12 | Free to run locally, beginner-friendly | **Nothing is paid**: Gemini's free tier handles the LLM work, and embeddings, vector store, and graph all run locally |
+| R12 | Free to run **and free to host** | Gemini free tier + Neo4j AuraDB Free + Replit free Starter. No paid service anywhere. |
+| **R13** | **Strangers cannot use my quota** | Shared-password gate + per-IP rate limiting (D11) |
+| **R14** | **Uploads do not block or time out** | Background job + status polling (D12) |
 
 ---
 
@@ -39,238 +66,407 @@
 
 ```
 D:\GraphRAG\
-├── .env                      ANTHROPIC_API_KEY=...        (gitignored)
+├── .env                      GEMINI_API_KEY, NEO4J_*, APP_PASSWORD   (gitignored)
 ├── .env.example              committed template
-├── requirements.txt
-├── PLAN.md                   this file
+├── requirements.txt          no torch, no chromadb, no networkx
+├── .replit                   Replit run config (Phase 12)
+├── PLAN.md
 ├── app/
-│   ├── main.py               FastAPI app, routes, static mount
-│   ├── config.py             Settings (pydantic-settings), model IDs, thresholds
-│   ├── schemas.py            Pydantic request/response + Entity/Relation/Path
-│   ├── errors.py             AppError hierarchy -> JSON error envelope
-│   ├── logging_conf.py       structured logging setup
+│   ├── main.py               FastAPI app, routes, middleware order
+│   ├── config.py             Settings + every threshold as a named constant
+│   ├── schemas.py            frozen Pydantic models
+│   ├── errors.py             typed errors -> {ok, data, error} envelope
+│   ├── logging_conf.py
+│   ├── security/
+│   │   ├── auth.py           password gate, signed session cookie (D11)
+│   │   └── rate_limit.py     per-IP token bucket (D11)
+│   ├── jobs/
+│   │   └── registry.py       in-memory job store + status (D12)
 │   ├── ingest/
-│   │   ├── loaders.py        PDF (pypdf) / TXT / MD -> plain text
-│   │   └── chunker.py        text -> overlapping chunks w/ stable ids
+│   │   ├── loaders.py        PDF/TXT/MD -> text              DONE Phase 1
+│   │   ├── chunker.py        text -> overlapping chunks       DONE Phase 1
+│   │   └── pipeline.py       the background ingestion job     (Phase 8)
 │   ├── vector/
-│   │   ├── base.py           VectorStore Protocol
-│   │   ├── chroma_store.py   ChromaDB implementation
-│   │   └── embedder.py       sentence-transformers wrapper (lazy-loaded)
+│   │   ├── base.py           VectorStore + Embedder Protocols
+│   │   ├── embedder.py       Gemini embeddings API (D8)
+│   │   ├── neo4j_vectors.py  Neo4j vector index implementation
+│   │   └── memory_store.py   in-memory fake for tests
 │   ├── graph/
-│   │   ├── base.py           GraphStore Protocol   <- the Neo4j seam
-│   │   ├── networkx_store.py NetworkX + atomic JSON persistence
-│   │   ├── extractor.py      extraction-tier LLM -> triples (structured output)
+│   │   ├── base.py           GraphStore Protocol
+│   │   ├── neo4j_store.py    Neo4j implementation (D9)
+│   │   ├── memory_store.py   in-memory fake for tests
+│   │   ├── cypher.py         all Cypher in one place
+│   │   ├── extractor.py      extraction-tier LLM -> triples
 │   │   ├── dedup.py          entity resolution (layers 1-5)
-│   │   └── traversal.py      BFS n-hop, shortest paths, scoring
+│   │   └── traversal.py      hop scoring + path assembly
+│   ├── db/
+│   │   ├── driver.py         Neo4j driver lifecycle, health check
+│   │   └── schema.py         constraints + vector index, idempotent
 │   ├── qa/
 │   │   ├── retriever.py      hybrid retrieval -> EvidenceBundle
 │   │   └── answerer.py       answer-tier LLM -> answer + verified citations
-│   ├── llm/
-│   │   ├── base.py           LLMProvider Protocol  <- the provider seam (D5)
-│   │   ├── factory.py        selects provider from LLM_PROVIDER
-│   │   ├── gemini_provider.py    google-genai, free tier (default)
-│   │   ├── anthropic_provider.py Claude, kept for the one-line switch back
-│   │   ├── client.py         Anthropic client + error translation
-│   │   ├── retry.py          backoff on 429; daily quota != per-minute (D7)
-│   │   ├── models.py         model discovery (D4/D6)
-│   │   └── fake.py           FakeLLM for offline tests
+│   ├── llm/                  DONE Phase 0 (provider seam, retry, discovery)
 │   └── static/
 │       └── index.html  app.js  styles.css
-├── data/                     chroma/ · graph.json · uploads/   (gitignored)
 └── tests/
-    ├── conftest.py           fixtures: tmp stores, FakeLLM, client
-    ├── fixtures/docs/        doc1 / doc2 / doc3 + expectations.json
-    └── test_*.py             one file per module
+    ├── conftest.py           in-memory stores, FakeLLM, FakeEmbedder, client
+    ├── fixtures/             pdf_builder.py + docs/
+    └── test_*.py
 ```
 
-**Ingest flow:** upload → load → chunk → embed+add to Chroma → per-chunk extraction → dedup against existing entities → upsert nodes/edges (each edge stores `source_chunk_id`) → persist graph.
+**Ingest flow (background job):** upload → size check → load → chunk → **batch-embed via Gemini** →
+write `:Document` + `:Chunk` nodes with embeddings → per-chunk extraction → dedup against existing
+entities → `MERGE` entity nodes and relationships (each carrying `source_chunk_id`) → job marked
+complete. Nothing touches the filesystem.
 
-**Ask flow:** embed question → Chroma top-k → map chunks to entities (seeds) + name-match seeds → BFS 1–3 hops with hop decay → shortest paths between seed pairs → pull the chunks backing every surviving edge → assemble context → the answer-tier model returns `{answer, doc_ids, edge_ids, path}` → **server drops any id not in the bundle** → render citations + path.
+**Ask flow:** embed the question (1 API call) → Neo4j `db.index.vector.queryNodes` top-k → seed
+entities from those chunks plus name matches → Cypher 1–3 hop expansion with hop decay → shortest
+paths between seed pairs → fetch the chunk behind every surviving edge → assemble context → the
+answer-tier model returns `{answer, chunk_ids, edge_ids}` → **server drops any id not in the
+bundle** → render citations + path.
 
-**The provider seam (D5).** `LLMProvider` is a `Protocol` with exactly two methods: `list_models()` and `generate_structured(model, prompt, schema, system, max_tokens, minimal_reasoning)`. Extraction and answering call only those, so neither imports `google.genai` or `anthropic`. `app/llm/factory.py` is the only module that knows which backend is live.
+### The three seams
 
-**The Neo4j seam.** `GraphStore` is a `Protocol` with exactly: `upsert_entity`, `upsert_relation`, `get_entity`, `find_entities_by_name`, `neighbors(ids, max_hops)`, `shortest_paths(a, b, max_hops)`, `all_entities`, `save`, `load`. Everything above the store speaks only in `Entity` / `Relation` / `GraphPath` dataclasses. Writing a `Neo4jGraphStore` later is one new file plus one line in a factory.
+**Provider seam (D5).** `LLMProvider`: `list_models()`, `generate_structured(...)`. Extraction and
+answering import neither `google.genai` nor `anthropic`.
+
+**Embedder seam (D8).** `Embedder`: `embed_documents(texts) -> list[Vector]`,
+`embed_query(text) -> Vector`, `dimension`. `FakeEmbedder` returns deterministic hash-derived
+vectors, so "similar text ranks higher" is assertable offline and at no cost.
+
+**Store seams (D9).** `GraphStore`: `upsert_entity`, `upsert_relation`, `get_entity`,
+`find_entities_by_name`, `neighbors(ids, max_hops)`, `shortest_paths(a, b, max_hops)`,
+`all_entities`, `stats`. `VectorStore`: `add(chunks, vectors)`, `query(vector, k)`, `get_by_ids`,
+`delete_doc`, `count`. One **conformance test suite runs against both** the in-memory and the Neo4j
+implementation, so the fake cannot drift from the real thing.
+
+### Neo4j data model
+
+```
+(:Document {doc_id, filename, chunk_count, ingested_at})
+(:Chunk    {chunk_id, doc_id, index, text, embedding, extracted_at})  -[:PART_OF]-> (:Document)
+(:Entity   {entity_id, name, type, aliases, description})
+(:Entity)  -[:MENTIONED_IN]-> (:Chunk)
+(:Entity)  -[:RELATES {rel_id, type, source_chunk_id, confidence}]-> (:Entity)
+```
+
+Relationships use a **single `RELATES` type with a `type` property** rather than dynamic
+relationship names: variable-length traversal (`-[:RELATES*1..3]-`) needs one type to match, and the
+semantic label travels as data. Uniqueness constraints on `Document.doc_id`, `Chunk.chunk_id`, and
+`Entity.entity_id` make every write an idempotent `MERGE`. The vector index is created on
+`:Chunk(embedding)` using the dimension discovered in Phase 2.
+
+**The extraction cache moves into the database.** A `:Chunk` carries `extracted_at`; re-ingesting the
+same `doc_id` skips chunks already extracted. This replaces the disk cache that protected the free
+quota — and unlike the disk cache, it survives a host restart.
 
 ---
 
 ## 3. Phases
 
-Each phase is independently runnable and testable. Phases 0–2 give a working (non-graph) RAG app, which is the right place to catch environment problems.
+### DONE — Phase 0: Environment, skeleton & model discovery *(2026-10-19)*
 
-### Phase 0 — Environment, skeleton & model discovery
+Provider seam, typed errors, config, `/api/health`, model discovery. 75 tests. Discovery caught a
+real defect: image-generation models leaking into the text tiers.
 
-*In simple words: get a Python that can actually install the libraries, prove the web server starts, and ask Anthropic which models this key may use.*
+### DONE — Phase 1: Document loading & chunking *(2026-10-19)*
 
-- Create venv with **Python 3.13** (D1).
-- `requirements.txt`: fastapi, uvicorn[standard], python-multipart, pydantic, pydantic-settings, **google-genai**, anthropic, chromadb, sentence-transformers, networkx, pypdf, rapidfuzz, python-dotenv, pytest, pytest-asyncio, httpx
-- `config.py` with `Settings`: provider, per-provider api keys and model ids, data paths, all thresholds and caps as named constants (no magic numbers elsewhere).
-- `main.py` with `GET /api/health`, static mount, `errors.py` exception handler returning `{ok, data, error}`.
-- **Provider seam (D5):** `llm/base.py`, `llm/factory.py`, `llm/gemini_provider.py`, `llm/anthropic_provider.py`, `llm/retry.py`.
-- **Model discovery (D4/D6):** `python -m app.llm.models` lists the key's accessible models, classified into the extraction and answer tiers, newest stable first; `--write` stores the chosen ids in `config.py`. Nothing is hardcoded from memory.
-- **Startup validation:** the *active* provider's key is required at boot, not on first question. Running on Gemini needs no Anthropic key.
+`loaders.py` (PDF/TXT/MD, content-hash `doc_id`, actionable typed errors) and `chunker.py`
+(paragraph-aware, word-boundary splits, carried overlap, deterministic `doc_id:index` ids).
+`POST /api/documents` returns `{doc_id, filename, chunk_count}`. **139 tests passing; `app/ingest`
+at 100% coverage.** Evidence: `.claude/tdd/phase-1-ingestion.tdd.md`. Commits `da6927d` → `727bddc`
+→ `e90b94c`.
 
-**Test:** `test_health.py` — 200 + payload incl. active provider. `test_config.py` — provider switching, per-provider keys and ids, `.env.example` documents every var and carries no credential. `test_models_discovery.py` — canned per-provider payloads; tier classification, Pro/image/non-text exclusion, version ranking, stable-beats-preview, per-provider config writing. `test_retry.py` — backoff schedule, daily-vs-per-minute 429. `test_provider_factory.py` — the seam itself.
+> Two small changes land later: the upload cap drops 20 MB → **1 MB** (D10/D14), and the response
+> gains a `job_id` (D12, Phase 8).
 
-**Done when:** `uvicorn app.main:app --reload` serves `/api/health`, every dependency installed cleanly, and the discovered model ids are in `config.py`.
+### Phase 2 — Embeddings via the Gemini API *(revised by D8)*
 
-**✅ COMPLETE (2026-10-19).** Python 3.13 venv with torch 2.14.1 / chromadb 1.5.9 / google-genai 2.31.0; **75 tests passing**; discovery wrote `gemini-3.5-flash-lite` + `gemini-3.8-flash`. Discovery also caught a real defect — image-generation models leaking into both tiers — now fixed and regression-tested.
+*In simple words: ask Google to turn each piece of text into a list of numbers, instead of
+downloading a 700 MB model to do it here.*
 
-### Phase 1 — Document loading & chunking
+- **Discover the embedding model (D8).** Extend `app/llm/models.py` with an embedding tier: list
+  models whose `supported_actions` include `embedContent`, rank them as the other tiers are ranked
+  (stable beats preview, higher version wins), and `--write` the chosen id into `config.py`. The
+  current Gemini filter *excludes* `embedding` models — that exclusion is lifted for this tier only.
+- **Discover the dimension, don't assume it.** Embed a short probe string once and measure
+  `len(vector)`. Gemini's embedding models accept a configurable output dimensionality, so the number
+  is a property of our configuration, not folklore. Neo4j's vector index fixes it at creation time,
+  so a wrong value here means rebuilding the index later.
+- `app/vector/embedder.py`: `GeminiEmbedder` implementing the `Embedder` seam. **Batched** —
+  `embed_documents` sends chunks in groups (`EMBEDDING_BATCH_SIZE`), because one request per chunk
+  would exhaust a free-tier per-minute limit on any real document. At the 200-chunk ceiling (D14)
+  a whole document is ~2 embedding calls. Reuses `with_retry` from Phase 0, so 429 backoff and
+  daily-quota detection come for free.
+- `app/vector/base.py`: `VectorStore` + `Embedder` Protocols. `app/vector/memory_store.py`:
+  in-memory implementation with cosine similarity in pure Python (no numpy needed at this scale).
+- `FakeEmbedder` for tests: deterministic vectors derived from a hash of the text.
+- Wire into the existing upload path and add `POST /api/ask` doing **vector-only** retrieval plus a
+  plain cited answer.
 
-*In simple words: turn any uploaded file into a list of small, numbered pieces of text.*
+**Test:** discovery picks the newest `embedContent` model from a canned payload; the probe measures
+the dimension rather than assuming it; batching splits a 250-chunk document into the expected number
+of requests; a 429 mid-batch retries without duplicating work; `FakeEmbedder` is deterministic; the
+in-memory store returns the semantically right chunk top-1, round-trips metadata, and `delete_doc`
+removes exactly that document's chunks. One `@pytest.mark.live` test embeds against the real API and
+asserts the dimension matches config.
 
-- `loaders.py`: dispatch on extension; PDF via `pypdf`, TXT/MD read as UTF-8 with `errors="replace"`. Unsupported extension and empty-text PDF both raise typed errors with actionable messages ("this PDF has no extractable text — it may be a scan").
-- `chunker.py`: paragraph-aware splitting, ~800 chars with ~120 overlap, never mid-word. Each chunk gets `chunk_id = f"{doc_id}:{index}"` — **deterministic**, because every citation and every edge points at it.
-- `doc_id` = sha256 of file bytes (first 16 hex) → re-uploading the same file is idempotent.
+**Done when:** upload a file, ask a question, get a cited answer — with no local model download and
+nothing written to disk. **Checkpoint — play with it before continuing.**
 
-**Test:** fixtures for each format; chunk count/overlap correctness; a 10-page PDF; unicode and emoji survive; same bytes → same ids; unsupported type raises; empty file raises.
+### Phase 3 — Neo4j AuraDB: schema, graph store, vector store *(revised by D9)*
 
-**Done when:** `POST /api/documents` returns `{doc_id, filename, chunk_count}`.
+*In simple words: put both the connections and the number-lists into one free cloud database.*
 
-### Phase 2 — Embeddings + ChromaDB (first working demo)
+- Create a **free AuraDB instance** in the Neo4j console; it gives a connection URI, a username, and
+  a password shown exactly once. These become `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`.
+- `app/db/driver.py`: driver lifecycle tied to the FastAPI lifespan, with a startup connectivity
+  check that fails loudly and names the likely cause (wrong URI scheme, paused instance, bad
+  password).
+- `app/db/schema.py`: idempotent `CREATE CONSTRAINT IF NOT EXISTS` and `CREATE VECTOR INDEX IF NOT
+  EXISTS`, using the Phase 2 dimension and cosine similarity. Safe to run on every boot.
+- `app/graph/neo4j_store.py` + `app/vector/neo4j_vectors.py`: the real implementations.
+  `app/graph/cypher.py` holds every query string in one place, so the Cypher is reviewable as a unit.
+- **Conformance suite:** Phase 3 tests are written once and parameterized over
+  `[InMemoryGraphStore, Neo4jGraphStore]`. The in-memory run is the default; the Neo4j run is
+  `@pytest.mark.live`, opt-in. A fake that drifts from the real store is worse than no fake.
 
-*In simple words: give each piece of text a numeric fingerprint, store them, and find the closest ones to a question. At the end of this phase you have a normal RAG app.*
+**Test:** upsert is idempotent; parallel relationships of different `type` coexist;
+`neighbors(max_hops=2)` returns exactly the 2-hop set on a hand-built 6-node fixture;
+`shortest_paths` finds the 3-hop chain and respects `max_hops`; vector query returns nearest first;
+`delete_doc` removes chunks, their `MENTIONED_IN` edges, and orphaned entities; a connectivity
+failure raises a typed error with a hint. The same assertions pass against both implementations.
 
-- `embedder.py`: `all-MiniLM-L6-v2`, module-level lazy singleton. Downloads ~90MB on first use — print a one-line notice.
-- `chroma_store.py`: `PersistentClient(path=data/chroma)`, one collection, metadata `{doc_id, chunk_id, filename, position}`.
-- `VectorStore` Protocol: `add(chunks)` / `query(text, k)` / `get_by_ids` / `delete_doc` / `count`.
-- Wire into ingest; add `POST /api/ask` doing **vector-only** retrieval + a plain answer with document citations.
+**Verify at build time, do not assume:** AuraDB Free's current node/relationship caps, and whether a
+free instance **auto-pauses when idle** — if it does, the first request after a pause may be slow or
+fail, and the app must say so clearly rather than appear broken.
 
-**Test:** add 3 chunks → query returns the semantically right one top-1; ids/metadata round-trip; `delete_doc` removes exactly that doc's chunks; store survives process restart; embeddings are deterministic and 384-dim.
+**Done when:** the conformance suite is green in memory, and green against a real AuraDB instance
+when run with `-m live`.
 
-**Done when:** upload a file, ask about it, get a cited answer. **Checkpoint — play with it before continuing.**
+### Phase 4 — Entity & relationship extraction
 
-### Phase 3 — Graph store + persistence
+*In simple words: ask the cheap model to read each chunk and list who/what is in it and how they
+connect.*
 
-*In simple words: a place to keep "who is connected to what", saved to a file, written so it can be replaced by a real graph database later.*
-
-- `base.py`: the `GraphStore` Protocol + `Entity(id, name, type, aliases, description, mention_chunk_ids)`, `Relation(id, source, target, type, source_chunk_id, confidence)`, `GraphPath(nodes, edges, score)`.
-- `networkx_store.py`: `MultiDiGraph`. `entity_id = f"{type}:{normalized_name}"`. `save()` writes `graph.json.tmp` then `os.replace` (atomic — never a half-written graph). `load()` tolerates a missing file, raises on a corrupt one.
-- `upsert_*` returns new `Entity`/`Relation` objects rather than mutating caller input; mutable adjacency lives only inside the store.
-- Read-only routes: `GET /api/graph/stats`, `GET /api/graph/entity/{id}`.
-
-**Test:** upsert is idempotent; parallel edges of different types coexist; `neighbors(max_hops=2)` returns exactly the 2-hop set (hand-built 6-node fixture); `shortest_paths` finds the 3-hop chain and respects `max_hops`; save→load round-trips; corrupt file raises; **conformance suite parameterized over the Protocol** so a future `Neo4jGraphStore` reuses it verbatim.
-
-**Done when:** graph survives restart and traversal primitives are proven on a fixture graph with no LLM involved.
-
-### Phase 4 — Entity & relationship extraction (extraction tier)
-
-*In simple words: ask the cheap model to read each chunk and list the people/companies/things in it and how they are connected.*
-
-- `extractor.py` calls `provider.generate_structured(model=settings.extraction_model, schema=ExtractionResult, minimal_reasoning=True)` — Pydantic-validated structured output, no JSON-parsing-by-regex, and no provider-specific code.
-- Constrained vocabulary: entity types `PERSON|ORG|PRODUCT|LOCATION|EVENT|CONCEPT`; relation types a fixed enum plus `OTHER` with a free-text label. An open vocabulary makes the graph unqueryable.
+- `extractor.py` calls `provider.generate_structured(model=settings.extraction_model,
+  schema=ExtractionResult, minimal_reasoning=True)` — Pydantic-validated, provider-agnostic.
+- **Batched at ~5 chunks per call (D14).** 200 chunks become ~40 calls instead of 200.
+  **The subtlety this introduces:** with five chunks in one prompt, the model must say which chunk
+  each triple came from, or `source_chunk_id` becomes a guess — and R6's whole promise rests on that
+  field being right. So chunks are labelled in the prompt (`[0] … [1] …`), the schema carries a
+  `source_chunk_index` per triple, and the server **maps the index back to the real `chunk_id` and
+  drops any triple whose index is out of range**. A mis-attributed relationship would produce a
+  citation pointing at text that does not support it, which is worse than a missing relationship.
+- Batch size is a named constant, so it can be lowered to 1 if attribution proves unreliable —
+  the per-chunk path stays available as the fallback.
+- Constrained vocabulary: entity types `PERSON|ORG|PRODUCT|LOCATION|EVENT|CONCEPT`; a fixed relation
+  enum plus `OTHER` with a free-text label. An open vocabulary makes the graph unqueryable.
 - Every relation records `source_chunk_id` (this is what makes R6 possible) and a `confidence`.
-- **Cache by chunk content hash** on disk — re-ingesting or re-running tests must not spend quota twice.
-- Concurrency-limited async fan-out over chunks (**semaphore 2**, per D7); per-chunk failures logged and skipped rather than failing the whole upload. A daily-quota error stops the run and says so, rather than retrying into a wall.
+- **Caching in Neo4j, not on disk (D10):** chunks with `extracted_at` set are skipped, so a re-ingest
+  costs nothing and a restart does not lose the protection.
+- Concurrency-limited fan-out (semaphore 2, per D7); per-chunk failures are logged and skipped rather
+  than failing the whole document. A daily-quota error **stops the job** and records that reason in
+  the job status, rather than retrying into a wall.
 
-**Test:** `FakeLLM` returning canned triples — asserts graph wiring, not model quality. Malformed/empty LLM output → chunk skipped, ingest still succeeds. Cache hit means zero LLM calls on second run. One `@pytest.mark.live` test (deselected by default) hitting the real API on a two-sentence string.
+**Test:** `FakeLLM` with canned triples asserts graph wiring, not model quality; malformed output
+skips one chunk and the job still completes; a second ingest of the same document makes zero LLM
+calls; a quota error marks the job failed with the reason visible. One `@pytest.mark.live` test
+extracts from a two-sentence string.
 
-**Done when:** uploading the 3 fixture docs produces a graph whose node and edge counts look sane.
+### Phase 5 — Entity deduplication (layers 1–5) *(D2 unchanged)*
 
-### Phase 5 — Entity deduplication (layers 1–5)
-
-*In simple words: realise that "Sarah Chen", "S. Chen", and "Dr. Sarah Chen" are one person, and merge them — without accidentally merging two different people who share a name.*
-
-Layered, cheapest-first; a pair must pass **same entity type** before any check:
+*In simple words: realise "Sarah Chen", "S. Chen" and "Dr. Sarah Chen" are one person — without
+merging two different people who share a name.*
 
 | Layer | Rule | Cost |
 |---|---|---|
-| 1 | Normalize: NFKC, casefold, strip titles (`Dr. Mr. Ms. Prof.`) and suffixes (`Inc. Ltd. Corp. LLC`), collapse whitespace/punctuation | free |
-| 2 | Exact match on normalized key | free |
-| 3 | Alias rules: initial expansion (`S. Chen` ↔ `Sarah Chen`), **unique** last-name-only match, acronym ↔ expansion | free |
-| 4 | Fuzzy: `rapidfuzz.token_set_ratio >= 92` → merge | free |
-| 5 | Embedding cosine on `name + description` >= 0.92 → merge | local |
-| ~~6~~ | ~~Grey-band LLM tiebreak~~ — **deferred per D2.** Pairs in the grey band (fuzzy 82–92 or cosine 0.85–0.92) are left **unmerged** and written to `data/dedup_candidates.jsonl` for later review. The resolver keeps a `tiebreaker` hook so layer 6 drops in without restructuring. | — |
+| 1 | Normalize: NFKC, casefold, strip titles and suffixes, collapse punctuation | free |
+| 2 | Exact match on the normalized key | free |
+| 3 | Alias rules: initial expansion, **unique** last-name match, acronym ↔ expansion | free |
+| 4 | Fuzzy: `rapidfuzz.token_set_ratio >= 92` | free |
+| 5 | Embedding cosine on name + description `>= 0.92` | **a Gemini call per new entity** — batched alongside chunk embeddings, not a separate pass |
+| ~~6~~ | ~~Grey-band LLM tiebreak~~ — deferred (D2). Grey-band pairs are **logged**, not written to a file (D10), and the resolver keeps a `tiebreaker` hook. | — |
 
-- Merging is a **union**: aliases, mention chunks, edges rewired to the canonical id; `merge_log.jsonl` records every decision with its deciding layer and score.
-- Candidate pairs processed in sorted order → deterministic, so tests are stable.
-- Deliberately conservative: an ambiguous last-name-only match is rejected. **Two different people named John Smith must stay separate** — a named test case, not a hope.
+- A pair must match on entity **type** before any check. Merging is a union of aliases, mentions and
+  relationships, rewired to the canonical id. Candidate pairs are processed in sorted order, so
+  results are deterministic and testable.
+- Merge decisions go to the **structured log** and onto the surviving node as `merged_from`, instead
+  of `merge_log.jsonl` (D10).
 
-**Test:** table-driven cases per layer; the `Sarah Chen / S. Chen / Dr. Sarah Chen` trio collapses to one node with 3 aliases; `Helios Labs / Helios Labs, Inc.` merges; `PERSON:Apple` never merges with `ORG:Apple`; the two John Smiths stay apart; merge is associative regardless of insertion order; edges survive rewiring; **grey-band pairs are recorded in `dedup_candidates.jsonl` and not merged** (D2).
-
-**Done when:** the 3 fixture docs yield one `Sarah Chen` node, and the merge log explains each decision.
+**Test:** table-driven per layer; the Sarah Chen trio collapses to one node with three aliases;
+`Helios Labs` / `Helios Labs, Inc.` merge; `PERSON:Apple` never merges with `ORG:Apple`; **two
+different John Smiths stay separate**; merging is order-independent; relationships survive rewiring;
+grey-band pairs are logged and left unmerged.
 
 ### Phase 6 — Hybrid retrieval & multi-hop traversal
 
-*In simple words: find relevant text, find the entities in it, then walk the graph up to 3 steps to pull in facts from documents the text search alone would have missed.*
+*In simple words: find relevant text, find the things named in it, then walk up to three steps to
+pull in facts from documents the text search alone would have missed.*
 
-1. Vector top-k (k=8) → candidate chunks.
-2. Seeds = entities mentioned in those chunks, plus entities whose name/alias matches the question (exact, then embedding >= 0.85).
-3. BFS 1–3 hops from seeds. Edge score `= confidence × hop_decay[hop]` (1.0 / 0.5 / 0.25). Node budget capped (60) and **hub entities degree-capped** so a node like `LOCATION:USA` cannot flood the context.
-4. If >= 2 seeds: `shortest_paths` between every seed pair (<= 3 hops). **These paths get a boost** — they are the multi-hop answer, and this step is what makes R5 work.
-5. Pull the chunk behind every surviving edge; union with the vector chunks → `EvidenceBundle(chunks, triples, paths)`.
-6. Deterministic ordering and a hard context budget (token-counted, not character-guessed).
+1. Embed the question (1 call) → Neo4j vector top-k (k=8).
+2. Seeds = entities `MENTIONED_IN` those chunks ∪ entities whose name/alias matches the question.
+3. Cypher 1–3 hop expansion from seeds. Edge score `= confidence × hop_decay[hop]`
+   (1.0 / 0.5 / 0.25), node budget capped at 60, and **hub entities degree-capped** so a node like
+   `LOCATION:USA` cannot flood the context.
+4. With ≥2 seeds, `shortest_paths` between every seed pair (≤3 hops). **These paths are boosted** —
+   they are the multi-hop answer, and this step is what makes R5 work.
+5. Fetch the chunk behind every surviving edge; union with the vector chunks → `EvidenceBundle`.
+6. Deterministic ordering and a hard context budget.
 7. Debug route `POST /api/retrieve` returns the raw bundle.
 
-**Test:** on the fixture graph, a question seeded only at `Sarah Chen` yields a bundle containing doc3's chunk reached via 3 hops; node cap honoured; hop-decay ordering correct; a hub node does not dominate; zero seeds returns an empty bundle without raising; one seed still returns 1-hop neighbours; reproducible across runs.
-
-**Done when:** the bundle for the multi-hop question provably contains all three documents.
+**Test:** on the fixture graph, a question seeded only at `Sarah Chen` yields a bundle containing
+doc3's chunk reached via 3 hops; node cap honoured; hop-decay ordering correct; a hub node does not
+dominate; zero seeds returns an empty bundle without raising; results reproducible.
 
 ### Phase 7 — Answer synthesis with verified citations
 
-*In simple words: hand the answer-tier model the text and the connections, make it answer using only those — then check its homework before showing it.*
+*In simple words: hand the answer model the text and the connections, make it answer from those
+only, then check its homework before showing it.*
 
-- `answerer.py`: `provider.generate_structured(model=settings.answer_model, schema=Answer)` where `Answer = {answer, used_chunk_ids, used_edge_ids, confidence: high|medium|low, insufficient_evidence}`.
-- System prompt: answer **only** from the supplied evidence; cite by id; if the evidence does not contain the answer, set `insufficient_evidence` and say so.
-- **Citation verification (the core of R6):** any `chunk_id` or `edge_id` not present in the bundle is **discarded** and logged. Citations are rendered server-side from the surviving ids, so a hallucinated source can never reach the UI. If every citation is dropped, the answer is downgraded and flagged.
-- Path rendering: `edge_ids` → `Sarah Chen —works_at→ Helios Labs —acquired_by→ Northwind Systems —produces→ Atlas`.
-- `max_tokens=16000`; the provider translates SDK failures through a specific-first chain (daily quota → per-minute rate limit → bad key → rejected model → other status → connection), never one broad catch.
-- `POST /api/ask` final shape: `{answer, confidence, sources:[{doc_id, filename, chunk_id, excerpt}], paths:[{display, hops, edges}], insufficient_evidence}`.
+- `provider.generate_structured(model=settings.answer_model, schema=Answer)` where
+  `Answer = {answer, used_chunk_ids, used_edge_ids, confidence, insufficient_evidence}`.
+- **Citation verification (the core of R6):** any id not present in the bundle is **discarded** and
+  logged. Citations are rendered server-side from the surviving ids, so a hallucinated source can
+  never reach the UI. If every citation is dropped, the answer is downgraded and flagged.
+- Path rendering: `edge_ids` → `Sarah Chen —works_at→ Helios Labs —acquired_by→ Northwind Systems`.
+- `POST /api/ask` → `{answer, confidence, sources[], paths[], insufficient_evidence}`.
 
-**Test:** `FakeLLM` returning a fabricated `chunk_id` → stripped and logged; valid ids → correct rendering; `insufficient_evidence` propagates; path string formatting; rate-limit error surfaces as a clean envelope, not a stack trace; empty bundle → "I do not have information about that" without an LLM call.
+**Test:** a fabricated `chunk_id` is stripped and logged; valid ids render correctly;
+`insufficient_evidence` propagates; an empty bundle answers "I don't have information about that"
+with **no LLM call**; a quota error surfaces as a clean envelope, not a stack trace.
 
-**Done when:** every answer's citations are verifiably real and the graph path is displayed.
+### Phase 8 — Background ingestion with status polling *(new — D12)*
 
-### Phase 8 — Single-page UI
+*In simple words: uploading returns straight away with a ticket number, and the page checks the
+ticket until the work is finished.*
 
-*In simple words: one clean web page — drop files in, type a question, read the answer with its sources and the path it followed.*
+- `POST /api/documents` validates size and type, creates a job, starts the work, and returns
+  `{job_id, doc_id, filename}` immediately.
+- `GET /api/jobs/{job_id}` → `{state, stage, chunks_done, chunks_total, error}`, where `state` is
+  `queued|running|succeeded|failed` and `stage` names the step (`chunking`, `embedding`,
+  `extracting`, `linking`).
+- `app/jobs/registry.py`: an in-memory registry with a bounded size and a TTL sweep. **Honest
+  limitation:** jobs are lost on restart and are not shared between processes — acceptable for one
+  free instance, and the endpoint reports "unknown job" rather than inventing a result.
+- **Upload cap drops to 1 MB and a 200-chunk ceiling applies (D10/D14)**; uploads stay in
+  memory end to end. A document over the ceiling is rejected with its chunk count in the
+  message, never silently truncated.
+- A job that fails on a daily quota records that as its error, so the UI can explain it.
 
-- Vanilla HTML/CSS/JS, no build step, no CDN dependency. Three regions: upload (drag-drop + progress + per-doc status), ask (textarea + submit), answer.
-- Answer card renders: the answer, a confidence chip, source cards (filename + excerpt, click to expand the full chunk), and the graph path as a horizontal chain of pills with the relation on each arrow.
-- A small graph-stats footer (`N entities, M relations`) so ingestion is visible.
-- Respects light/dark via `prefers-color-scheme`; keyboard accessible; readable at 400px; visible error states for every failure mode (bad file type, no API key, rate limited).
-- Long ingests get a status poll (`GET /api/documents/{id}/status`) rather than a hung request.
+**Test:** upload returns a job id without waiting; polling moves `queued → running → succeeded`;
+progress counters are monotonic; a failing chunk does not fail the job but a quota error does; an
+unknown job id is a clean 404; the registry evicts by TTL and by size; a 2 MB upload and a
+201-chunk document are both rejected **before any embedding call is made**.
 
-**Test:** route serves `index.html`; static assets 200; smoke test driving upload→ask via `TestClient` asserting the JSON the UI consumes. Manual checklist for the visual states.
+### Phase 9 — Password gate & per-IP rate limiting *(new — D11)*
 
-**Done when:** the whole flow works in a browser with no console errors.
+*In simple words: one password so only you and whoever you share it with can use the app, plus a cap
+so nobody can hammer it.*
 
-### Phase 9 — Multi-hop evaluation set & hardening
+- `app/security/auth.py`: `POST /api/login` compares the submitted password to `APP_PASSWORD` with
+  `hmac.compare_digest` (constant-time), then sets an HTTP-only, `Secure`, `SameSite=Lax` cookie
+  holding a signed, expiring token. Middleware rejects everything except `/api/health`, the login
+  route, and static assets. **Startup refuses to boot without `APP_PASSWORD`** — a public app with no
+  gate is the failure mode most worth preventing loudly.
+- `app/security/rate_limit.py`: per-IP token bucket — a generous limit for reads and a strict one for
+  the two endpoints that spend quota (`/api/documents`, `/api/ask`). Exceeding it returns 429 with a
+  `Retry-After`.
+- **Client IP behind a proxy:** Replit terminates TLS upstream, so the socket peer is the proxy. The
+  limiter must read the forwarded header and trust it **only** from the expected proxy — otherwise
+  anyone can spoof an IP and bypass the limit entirely. Replit's actual headers must be verified in
+  Phase 12 rather than guessed now.
+- Login attempts are themselves rate-limited, so the password cannot be brute-forced.
 
-*In simple words: three tiny documents built so that one question can only be answered by combining all three — proof the graph is doing real work.*
+**Test:** every protected route returns 401 without a cookie and 200 with one; a wrong password is
+rejected and counted; the cookie is `HttpOnly`/`Secure`/`SameSite`; an expired or tampered token is
+rejected; the bucket allows N then returns 429 with `Retry-After`; buckets are per-IP, not global; a
+spoofed forwarded header from an untrusted peer is ignored; **boot fails with no `APP_PASSWORD`**.
 
-**`tests/fixtures/docs/`:**
+### Phase 10 — Single-page UI
 
-| File | Content (abridged) | Contributes |
-|---|---|---|
-| `doc1_hire.md` | "Helios Labs announced that **Sarah Chen** joins as VP of Engineering, leading the compiler team." | `PERSON:sarah chen —works_at→ ORG:helios labs` |
-| `doc2_acquisition.txt` | "**Northwind Systems** completed its acquisition of **Helios Labs** in March 2024. **S. Chen**'s compiler group was retained." | `ORG:helios labs —acquired_by→ ORG:northwind systems` + dedup bait (`S. Chen`) |
-| `doc3_product.pdf` | "Northwind Systems' flagship is the **Atlas** data platform. **Dr. Sarah Chen** now reports to the Atlas organisation." | `ORG:northwind systems —produces→ PRODUCT:atlas` + dedup bait (`Dr. Sarah Chen`) |
+*In simple words: one clean page — log in, drop files, watch them process, ask a question, read the
+answer with its sources and the path it followed.*
 
-**`expectations.json`** drives the eval:
+- Vanilla HTML/CSS/JS, no build step, no CDN. Login view → app view.
+- Upload area with per-file progress driven by the Phase 8 polling endpoint, showing the current
+  stage and a chunk counter.
+- Answer card: the answer, a confidence chip, source cards (filename + excerpt, expandable), and the
+  graph path as a chain of pills with the relation on each arrow.
+- Visible, specific error states for every real failure: wrong password, file too large, unsupported
+  type, scanned PDF, rate limited, **daily quota exhausted**, database paused.
+- Light/dark via `prefers-color-scheme`; keyboard accessible; readable at 400px.
 
-| Question | Hops | Must cite |
-|---|---|---|
-| "Which product does Sarah Chen's work ultimately contribute to?" | **3 — needs all three docs** | doc1, doc2, doc3 |
-| "Who acquired Helios Labs?" | 1 | doc2 |
-| "Where did Sarah Chen work before the acquisition?" | 2 | doc1, doc2 |
-| "What is Helios Labs' quarterly revenue?" | — | `insufficient_evidence: true` |
+**Test:** the login page is served unauthenticated and the app shell only when authenticated; a
+`TestClient` smoke test drives login → upload → poll → ask and asserts the JSON the UI consumes.
+Manual checklist for the visual states.
 
-One file format each (MD/TXT/PDF) so the eval covers all three loaders. `expectations.json` also asserts the deduped entity count — this set tests retrieval *and* dedup at once.
+### Phase 11 — Multi-hop evaluation set & hardening
 
-**Test:** `test_eval_multihop.py` — ingest all three into a temp store, run each question, assert the cited doc set and the recovered path; the vector-only baseline **must fail** the 3-hop question (that is the proof the graph earns its keep); the negative question must refuse. Marked `live`, with a `FakeLLM`-scripted variant for offline runs.
+*In simple words: three tiny documents built so one question can only be answered by combining all
+three — proof the graph is doing real work.*
 
-**Hardening in the same phase:** upload size limit + filename sanitization (path traversal), concurrency note in the README (`--workers 1` — NetworkX is in-process), `DELETE /api/documents/{id}` removing chunks, nodes, and orphaned edges, `README.md` quickstart, and a cost note.
+| File | Contributes |
+|---|---|
+| `doc1_hire.md` | `PERSON:sarah chen —works_at→ ORG:helios labs` |
+| `doc2_acquisition.txt` | `ORG:helios labs —acquired_by→ ORG:northwind systems` + dedup bait (`S. Chen`) |
+| `doc3_product.pdf` | `ORG:northwind systems —produces→ PRODUCT:atlas` + dedup bait (`Dr. Sarah Chen`) |
+
+`expectations.json` drives the eval: the 3-hop question ("Which product does Sarah Chen's work
+ultimately contribute to?") must cite all three documents; a 1-hop and a 2-hop question check the
+easy cases; and "What is Helios Labs' quarterly revenue?" must return `insufficient_evidence`. One
+file per format, so the eval covers all three loaders as well as the deduped entity count.
+
+**Test:** `test_eval_multihop.py` ingests all three, runs each question, and asserts the cited
+document set and the recovered path. **The vector-only baseline must fail the 3-hop question** — that
+is the proof the graph earns its keep.
+
+**Hardening:** filename sanitization; `DELETE /api/documents/{doc_id}`; `/api/health` reporting
+database connectivity; structured request logging; README quickstart.
+
+### Phase 12 — Deploy to Replit *(new — D13)*
+
+*In simple words: put the code on GitHub, tell Replit to run it, paste the secrets in, press Run.*
+
+A beginner step-by-step guide, written out in full:
+
+1. **Push to GitHub** — create an empty repo, `git remote add origin …`, `git push -u origin master`.
+   Confirm `.env` is absent from the repo and that `.gitignore` covers it.
+2. **Import into Replit** — Create App → Import from GitHub → pick the repo.
+3. **Configure the run command** — `.replit` with
+   `uvicorn app.main:app --host 0.0.0.0 --port $PORT`. Binding `0.0.0.0` and reading `$PORT` is what
+   makes the app reachable; `127.0.0.1` or a hardcoded port looks exactly like a broken deploy.
+4. **Pin the Python version**, so Replit does not choose a different one than local.
+5. **Set Secrets** (Replit's Secrets panel — never in the repo): `GEMINI_API_KEY`, `NEO4J_URI`,
+   `NEO4J_USERNAME`, `NEO4J_PASSWORD`, `APP_PASSWORD`, `SESSION_SECRET`.
+6. **First run** — watch the log for the three startup checks (Gemini key, Neo4j connectivity,
+   `APP_PASSWORD` present), then open the public URL and log in.
+7. **Smoke test the deployed app** — upload one fixture document, poll to completion, ask the 3-hop
+   question, confirm the citations and path render.
+8. **What to expect from the free plan** — idle sleep and cold starts, the ephemeral filesystem
+   (which is why D10 exists), and where to find the logs.
+
+**Test:** a deploy checklist in the README, plus a `GET /api/health` that reports provider, model
+ids, database connectivity, and whether the password gate is armed — one request that proves the
+deployment is wired correctly.
 
 ---
 
 ## 4. Dependencies & order
 
-Hard ordering: **0 → 1 → 2** (demo checkpoint) **→ 3 → 4 → 5 → 6 → 7 → 8 → 9**.
+**Hard ordering:** 2 → 3 → 4 → 5 → 6 → 7, then 8 → 9 → 10 (the UI needs both polling and login), then
+11 → 12.
 
-Parallelizable: Phase 8 (UI) can be built against stubbed JSON any time after Phase 2; Phase 9's fixture documents can be written at any point.
+**Parallelizable:** the Phase 11 fixture documents can be written at any time; the Phase 10 UI can be
+built against stubbed JSON once Phase 2 is done.
 
-External: Anthropic API key; ~90MB embedding model download; ~700MB torch install.
+**External accounts needed:** a Gemini API key (have it), a **Neo4j AuraDB Free instance** (Phase 3),
+a **GitHub repo**, and a **Replit account** (Phase 12).
+
+**`requirements.txt` after D8/D9:** fastapi, uvicorn[standard], python-multipart, pydantic,
+pydantic-settings, python-dotenv, google-genai, anthropic, **neo4j**, pypdf, rapidfuzz, itsdangerous,
+pytest, pytest-asyncio, pytest-cov, httpx. **Removed:** chromadb, sentence-transformers, torch,
+scikit-learn, networkx.
 
 ---
 
@@ -278,18 +474,20 @@ External: Anthropic API key; ~90MB embedding model download; ~700MB torch instal
 
 | Risk | Likelihood | Severity | Mitigation |
 |---|---|---|---|
-| Python 3.15 lacks torch/chromadb wheels | High | Blocker | D1: venv pinned to 3.13; verify install before writing app code |
-| LLM invents citations | High | High | Server-side id validation in Phase 7 — invented ids dropped, never rendered |
-| Dedup over-merges distinct entities | Medium | High | Type-gated, conservative thresholds, ambiguous matches rejected, full merge log; "two John Smiths" is a test |
-| Dedup under-merges (layer 6 deferred) | Medium | Medium | D2: grey-band pairs logged to `dedup_candidates.jsonl` so misses are visible and layer 6 can be added later |
-| **Free-tier quota exhaustion** (daily request cap) | Medium | Medium | Cheapest tier + content-hash cache (re-ingest costs nothing) + concurrency 2 + backoff; a daily cap is reported as its own error naming when quota resets, never silently retried |
-| Answer quality on a Flash-tier model is the new ceiling | Medium | Medium | Phase 9's eval measures it rather than assuming; `LLM_PROVIDER=anthropic` is a one-line upgrade path if Flash proves too weak on the 3-hop question |
-| Discovery picking a non-text model that advertises `generateContent` | Low (fixed) | High | Segment-aware filter excludes `*-image` / audio / TTS / vision; regression test asserts a higher-versioned image model never wins either tier |
-| Hub entities explode the subgraph | Medium | Medium | Degree cap, node budget, hop decay |
-| NetworkX single-process writes corrupt/race | Medium | Medium | Atomic `os.replace` + documented `--workers 1`; the Protocol is the migration path |
-| Scanned PDFs yield no text | Medium | Low | Detected and reported as a clear error; OCR explicitly out of scope |
-| Extraction quality is the real quality ceiling | Medium | Medium | Constrained vocabulary, confidence scores, `/api/retrieve` debug route, Phase 9 eval to measure rather than guess |
-| Local-only app has no auth | High | Low (by design) | Documented as localhost-only; size limits and filename sanitization still applied |
+| **Replit's free Starter plan may not provide a persistent public URL.** Free Replit hosting has historically meant a dev-mode URL that sleeps, with always-on Deployments as a paid feature. This is the single assumption that could invalidate the goal. | **Unknown — must verify** | **High** | Verify **before** investing in Phase 12 by deploying the app as it stands today. If the free plan cannot host publicly, the code is unaffected — it is a standard ASGI app, and the Render / Fly.io / Hugging Face Spaces free tiers take it unchanged. Only Phase 12's guide would differ. |
+| ~~A 5 MB document can exhaust the free quota in one upload~~ — **resolved by D14.** | Low | Medium | 1 MB cap + 200-chunk ceiling + batched embeddings + 5-chunk extraction batches ≈ 42 calls per document. Job status shows a running count; a daily-quota error stops the job and says why. |
+| Batched extraction mis-attributes a relationship to the wrong chunk | Medium | High | Labelled chunks in the prompt, `source_chunk_index` per triple, server-side range check that drops out-of-range triples; batch size is a constant that can drop to 1. Tested with a deliberately out-of-range index. |
+| Gemini embedding model id or dimension guessed wrong | Low (by design) | High | D8: discovered from the API, dimension measured from a probe. A wrong dimension means rebuilding the Neo4j vector index. |
+| AuraDB Free pauses when idle, or its caps are tighter than expected | Medium | Medium | Verify in Phase 3; startup connectivity check with a clear "database may be paused" message; the UI surfaces it as a real state, not a generic error. |
+| Rate limiter bypassed via a spoofed forwarded header | Medium | Medium | Trust the forwarded header only from the expected proxy; verify Replit's actual headers in Phase 12. Tested explicitly. |
+| In-memory job registry loses state on restart | High (accepted) | Low | Documented; status reports "unknown job" rather than lying. Sleep-prone free hosting makes this visible, so the UI handles it. |
+| LLM invents citations | High | High | Phase 7 server-side id validation — invented ids are dropped, never rendered. |
+| Dedup over-merges distinct entities | Medium | High | Type-gated, conservative thresholds, ambiguous matches rejected, merge decisions logged; "two John Smiths" is a named test. |
+| Dedup under-merges (layer 6 deferred) | Medium | Medium | Grey-band pairs logged so misses are visible; the tiebreaker hook stays. |
+| Answer quality on a Flash-tier model is the ceiling | Medium | Medium | Phase 11's eval measures it; `LLM_PROVIDER=anthropic` is a one-line upgrade. |
+| Hub entities explode the subgraph | Medium | Medium | Degree cap, node budget, hop decay. |
+| Scanned PDFs yield no text | Medium | Low | Detected and reported clearly; OCR is out of scope. |
+| A shared password is weak access control | Medium | Medium | Constant-time compare, signed expiring cookie, login attempts rate-limited, boot refuses without it. Adequate for a personal app; not multi-user auth. |
 
 ---
 
@@ -297,16 +495,20 @@ External: Anthropic API key; ~90MB embedding model download; ~700MB torch instal
 
 | Phase | Estimate |
 |---|---|
-| 0 Environment, skeleton & model discovery | 1–2 h |
-| 1 Loading & chunking | 2 h |
-| 2 Embeddings + Chroma (demo) | 2–3 h |
-| 3 Graph store | 2–3 h |
+| ~~0 Environment & discovery~~ | done |
+| ~~1 Loading & chunking~~ | done |
+| 2 Gemini embeddings + vector seam | 3–4 h |
+| 3 Neo4j schema, graph + vector stores | 4–5 h |
 | 4 Extraction | 3–4 h |
-| 5 Deduplication (layers 1–5) | 2–3 h |
+| 5 Deduplication | 2–3 h |
 | 6 Hybrid retrieval | 4–5 h |
-| 7 Answer + verified citations | 3 h |
-| 8 UI | 3–4 h |
-| 9 Eval set + hardening | 2–3 h |
-| **Total** | **~24–32 h** |
+| 7 Answers + verified citations | 3 h |
+| 8 Background jobs + polling | 3 h |
+| 9 Password gate + rate limiting | 3 h |
+| 10 UI | 4–5 h |
+| 11 Eval set + hardening | 3 h |
+| 12 Replit deploy + guide | 2–3 h |
+| **Remaining** | **~34–44 h** |
 
-Standards: 80% coverage target, every file under the 800-line ceiling, functions under 50 lines, immutable dataclasses across module boundaries.
+Standards: 80% coverage minimum, files under the 800-line ceiling, functions under 50 lines, frozen
+dataclasses across module boundaries, every threshold a named constant in `config.py`.

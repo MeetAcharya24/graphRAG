@@ -84,7 +84,9 @@ RETRY_MAX_DELAY_SECONDS = 60.0
 VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 
 # --- Uploads ---------------------------------------------------------------
-MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+# 1 MB, per decision D14. A 1 MB document is roughly 200 chunks, which is the
+# quota budget: ~2 batched embedding calls plus ~40 batched extraction calls.
+MAX_UPLOAD_BYTES = 1 * 1024 * 1024
 SUPPORTED_EXTENSIONS = (".pdf", ".txt", ".md")
 
 
