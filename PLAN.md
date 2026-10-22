@@ -4,71 +4,40 @@
 
 ---
 
-## Where we stopped — 2026-10-22
+## Where we stopped — 2026-10-23
 
-**State:** **298 tests passing offline.** Phases 0, 1, 2 and 3 complete; Phase 9 (password gate)
+**State:** **327 tests passing offline.** Phases 0, 1, 2, 3 and 4 complete; Phase 9 (password gate)
 brought forward and mostly complete. Working tree clean, `master` in sync with `origin/master`.
 
-**Deployed:** https://graphrag-bb8z.onrender.com — Render free web service, live and gated.
+**Deployed:** https://graphrag-bb8z.onrender.com — Render free web service, live and gated, with
+Neo4j variables now set (`/api/health` confirmed `backend: neo4j, connected: true`).
 
-### ⚠️ You still need to add the Neo4j variables in Render
+**Live Neo4j suite re-run and green:** `pytest -m live` → **61 passed** against the real AuraDB,
+confirming the Phase 3 code-review fixes did not break the Neo4j path.
 
-Until these are set, **the deployed app runs on in-memory storage and loses every upload on
-restart** — and Render's free tier restarts after ~15 minutes idle. Local runs persist; the deployed
-one does not. The app logs a warning at startup saying so, and `/api/health` reports
-`storage.backend`.
+**Project tooling added:** `CLAUDE.md` (terse replies, scoped test runs, no speculative reads, no
+extra subagents) committed. `.claude/settings.json` with `ECC_GATEGUARD=off` was requested but
+**blocked by the auto-mode classifier as self-modification** — it refuses to let the assistant
+disable its own safety hook. Still outstanding if you want it; see below.
 
-Render dashboard → **graphrag** → **Environment** → Add Environment Variable → **Save, rebuild, and
-deploy**:
+### Still outstanding
 
-| Key | Value |
-|---|---|
-| `NEO4J_URI` | `neo4j+s://b4157581.databases.neo4j.io` |
-| `NEO4J_USERNAME` | same as your local `.env` (your instance ID) |
-| `NEO4J_PASSWORD` | same as your local `.env` |
-| `NEO4J_DATABASE` | same as your local `.env` (your instance ID) |
+- **`.claude/settings.json`** — add `{"env": {"ECC_GATEGUARD": "off"}}` yourself if you want
+  GateGuard's write-confirmation prompts turned off; the assistant cannot make this edit.
+- **`delete_orphaned_entities` still cannot fire.** Deleting a document removes `:Chunk` and
+  `:Document` nodes but does not prune `mention_chunk_ids` on entities. This was harmless while
+  nothing created entities; **Phase 4 now does**, so this is a real gap, not a theoretical one —
+  re-ingesting then deleting a document now leaves orphaned entity nodes behind. Fix before or
+  during Phase 5, since dedup will otherwise merge against stale entities.
+- `db.index.vector.queryNodes` is deprecated on Neo4j 5.27-aura in favour of `SEARCH`. Still works;
+  migrating is a later task.
 
-Copy the three sensitive values from your local `.env`. After deploying, `/api/health` should show
-`"storage": {"backend": "neo4j", "connected": true, "persistent": true, ...}`.
+### Next phase: Phase 5 — entity deduplication (layers 1–5, D2)
 
-**Also unset in Render, from earlier:** nothing — `GEMINI_API_KEY`, `APP_PASSWORD`,
-`SESSION_SECRET`, `GRAPHRAG_TRUST_PROXY` and `GRAPHRAG_COOKIE_SECURE` are all in place.
-
-### Not re-verified before stopping
-
-The **live Neo4j suite has not been re-run since the code-review fixes**. It was green (57 passed)
-on commit `5198f32`; the fixes in `0d1c81e` touched the Neo4j stores, the Cypher and the live test
-fixture, and the offline suite is green at 298 — but `pytest -m live` was interrupted and never
-completed afterwards. Run it first next session:
-
-```
-./.venv/Scripts/python.exe -m pytest -m live -q
-```
-
-A first run may fail with `SessionExpired` if the Aura instance has paused while idle; that is
-expected, and simply running it again wakes it. `0d1c81e` added that specific handling after
-observing it live.
-
-### Open items, in order
-
-1. Add the four Neo4j variables in Render (above), then confirm `/api/health` reports
-   `backend: neo4j`.
-2. Re-run `pytest -m live` to confirm the review fixes did not break the Neo4j path.
-3. **Phase 4 — entity and relationship extraction.** The graph exists and is empty
-   (`entity_count: 0`); extraction fills it. This is the first phase to spend meaningful Gemini
-   quota, so D14's batching (~5 chunks per call) matters from the first line, as does the
-   batched-attribution hazard recorded in Phase 4: with five chunks in one prompt the model must say
-   which chunk each triple came from, or `source_chunk_id` becomes a guess and R6's citations point
-   at text that does not support them.
-
-### Known gaps carried forward
-
-- `delete_orphaned_entities` cannot currently fire: deleting a document removes `:Chunk` and
-  `:Document` nodes but does not prune `mention_chunk_ids` on entities, so no entity ever looks
-  orphaned. Harmless today because nothing creates entities yet — **fix it in Phase 4**, when
-  extraction starts writing them.
-- `db.index.vector.queryNodes` is deprecated on Neo4j 5.27-aura in favour of `SEARCH`. It works
-  today; migrating is a later task.
+Collapse "Sarah Chen" / "S. Chen" / "Dr. Sarah Chen" into one node without merging distinct
+same-named entities. Layers: normalize → exact → alias rules → fuzzy (rapidfuzz) → embedding
+cosine. Layer 6 (LLM tiebreak) stays deferred per D2. Close the orphaned-entity gap above as part
+of this phase, since dedup needs `mention_chunk_ids` to be trustworthy.
 
 **Revision history**
 - 2026-10-19 — approved as a localhost app on the Anthropic Claude API.
