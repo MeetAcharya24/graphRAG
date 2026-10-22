@@ -63,6 +63,13 @@ class CorruptGraphFile(AppError):
     code = "corrupt_graph_file"
 
 
+class DatabaseUnavailable(AppError):
+    """The graph database could not be reached or refused the credentials."""
+
+    status_code = 503
+    code = "database_unavailable"
+
+
 class EntityNotFound(AppError):
     status_code = 404
     code = "entity_not_found"

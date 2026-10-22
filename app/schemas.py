@@ -40,3 +40,50 @@ class DocumentSummary(_Frozen):
     doc_id: str
     filename: str
     chunk_count: int = Field(ge=0)
+
+
+# --- the knowledge graph (Phase 3) ---------------------------------------
+
+
+class Entity(_Frozen):
+    """A person, organisation, product, place, event or concept.
+
+    `entity_id` is `TYPE:normalised name`, so the same thing written two ways
+    collapses to one node while `Apple` the company stays distinct from `Apple`
+    the product.
+    """
+
+    entity_id: str
+    name: str
+    type: str
+    aliases: tuple[str, ...] = ()
+    description: str = ""
+    mention_chunk_ids: tuple[str, ...] = ()
+
+
+class Relation(_Frozen):
+    """A directed, labelled edge between two entities.
+
+    `source_chunk_id` is the chunk the relationship was read from. Without it
+    an answer could show a graph path it cannot justify from any text, which is
+    exactly what R6 forbids.
+    """
+
+    rel_id: str
+    source_id: str
+    target_id: str
+    type: str
+    source_chunk_id: str
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+
+
+class GraphPath(_Frozen):
+    """A walk through the graph: n nodes joined by n-1 edges."""
+
+    nodes: tuple[Entity, ...]
+    edges: tuple[Relation, ...]
+    score: float = 1.0
+
+    @property
+    def hops(self) -> int:
+        return len(self.edges)

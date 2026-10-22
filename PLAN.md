@@ -4,36 +4,23 @@
 
 ---
 
-## Where we stopped — 2026-10-21
+## Where we stopped — 2026-10-22
 
-**State:** 181 tests passing. Phases 0 and 1 complete; Phase 9 (password gate) mostly complete and
-brought forward. `master` and `origin/master` in sync at `2afc79c`.
+**State:** **294 tests passing offline, 57 live against AuraDB.** Phases 0, 1, 2 and 3 complete;
+Phase 9 (password gate) brought forward and mostly complete.
 
 **Deployed:** https://graphrag-bb8z.onrender.com — Render free web service, no card required.
 Verified live: `/api/health`, document upload, idempotent `doc_id`, the 415/413 rejection paths, and
 the password gate refusing un-authenticated requests. Cold start measured at **42 s** after 17 min
 idle (1.3 s warm).
 
-**⚠️ Unconfirmed:** the deploy of `2afc79c` (the `itsdangerous` fix). The previous deploy failed with
-`ModuleNotFoundError` because the package was never declared in `requirements.txt`; the fix is pushed
-and verified in a clean venv locally, but **nobody has confirmed the Render deploy went green.**
-Check that first next session.
+**⚠️ Open item:** the deployed Render app has **no Neo4j variables set yet**, so it is still running
+with in-memory storage and loses uploads on restart. Four variables need adding — see the Phase 12
+list. Until then, local runs persist and the deployed one does not.
 
-**Open items, in order:**
-
-1. Confirm the `2afc79c` deploy succeeded; if not, read the log — the fix addressed the one cause
-   that was reproducible, and a second could be hiding behind it.
-2. Add two remaining Render environment variables: `SESSION_SECRET` (any long random string — without
-   it the 42 s sleep cycle logs you out every wake) and `GRAPHRAG_COOKIE_SECURE=true`.
-3. Create a **Neo4j AuraDB Free** instance — needed before Phase 3, and it shows the password only
-   once.
-
-**Next phase: Phase 2** — embeddings via the Gemini API. Discover the embedding model from the API
-and *measure* its vector dimension with a probe, because Phase 3 fixes that dimension into the Neo4j
-vector index and a wrong value means rebuilding it.
-
-**Standing caveat:** the live app is gated now, but `/api/ask` does not exist yet, so nothing on it
-can spend Gemini quota.
+**Next phase: Phase 4** — entity and relationship extraction. The graph exists and is empty
+(`entity_count: 0`); extraction is what fills it, and it is the first phase to spend meaningful
+Gemini quota, so D14's batching (~5 chunks per call) matters from the first line.
 
 ---
 
@@ -260,7 +247,15 @@ asserts the dimension matches config.
 **Done when:** upload a file, ask a question, get a cited answer — with no local model download and
 nothing written to disk. **Checkpoint — play with it before continuing.**
 
-### Phase 3 — Neo4j AuraDB: schema, graph store, vector store *(revised by D9)*
+### Phase 3 — Neo4j AuraDB: schema, graph store, vector store — **DONE (2026-10-22)**
+
+> 294 offline tests and **57 live tests against the real AuraDB** (Neo4j 5.27-aura).
+> Documents now survive a restart, verified by killing the process and asking again.
+> Evidence: `.claude/tdd/phase-3-neo4j.tdd.md`.
+>
+> Two divergences between the fake and Neo4j were found by the conformance suite and closed:
+> tie ordering (the index returns equal scores in its own order) and score range (Neo4j
+> rescales cosine to [0,1]; ordering still agrees, so no absolute threshold is ever applied).
 
 *In simple words: put both the connections and the number-lists into one free cloud database.*
 
