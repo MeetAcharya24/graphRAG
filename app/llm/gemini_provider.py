@@ -21,6 +21,7 @@ from app.errors import (
 )
 from app.llm.base import (
     FAMILY_CHEAP,
+    FAMILY_EMBED,
     FAMILY_STRONG,
     ModelInfo,
     SchemaT,
@@ -41,7 +42,6 @@ _PAID_MARKERS = ("pro",)
 # Models that cannot do plain text generation at all. Matched as substrings,
 # so these must be distinctive enough not to catch a text model by accident.
 _NON_TEXT_MARKERS = (
-    "embedding",
     "imagen",
     "veo",
     "aqa",
@@ -69,6 +69,7 @@ _NON_TEXT_SEGMENTS = frozenset(
 )
 
 _GENERATE_ACTION = "generateContent"
+_EMBED_ACTION = "embedContent"
 
 
 def _field(item, name: str):
@@ -91,8 +92,18 @@ def classify(model_id: str, supported_actions: list[str] | None) -> str | None:
     """
     lowered = strip_prefix(model_id.lower())
 
-    if supported_actions and _GENERATE_ACTION not in supported_actions:
-        return None
+    # The embedding tier is identified by capability, not by name: these models
+    # advertise embedContent instead of generateContent (D16).
+    if supported_actions:
+        if _EMBED_ACTION in supported_actions:
+            return FAMILY_EMBED
+        if _GENERATE_ACTION not in supported_actions:
+            return None
+    elif "embedding" in lowered:
+        # No action list to go on (hand-written dicts in tests); fall back to
+        # the name, which is the only signal left.
+        return FAMILY_EMBED
+
     if any(marker in lowered for marker in _PAID_MARKERS):
         return None
     if any(marker in lowered for marker in _NON_TEXT_MARKERS):

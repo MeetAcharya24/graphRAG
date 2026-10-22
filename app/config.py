@@ -43,10 +43,21 @@ CHUNK_MIN_CHARS = 80
 DOC_ID_HASH_LENGTH = 16
 
 # --- Vector search (Phase 2) ----------------------------------------------
-EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
-EMBEDDING_DIMENSIONS = 384
+# Filled in by `python -m app.llm.models --write` (D4/D16). Empty means
+# "not yet discovered"; the app starts but refuses to embed.
+DEFAULT_EMBEDDING_MODEL = "gemini-embedding-2"
+
+# 768 is a deliberate choice, not the API default (D16). gemini-embedding-2
+# defaults to 3072 and supports 768/1536/3072; at 3072 each chunk's vector is
+# ~12 KB against ~3 KB at 768, and Neo4j Aura Free storage is the binding
+# constraint. Changing this means rebuilding the Neo4j vector index.
+EMBEDDING_DIMENSIONS = 768
+
+# Texts per embedding request. The API accepts a batch, so this is what keeps
+# a 200-chunk document to ~2 calls instead of 200 (D14).
+EMBEDDING_BATCH_SIZE = 100
+
 VECTOR_TOP_K = 8
-CHROMA_COLLECTION_NAME = "graphrag_chunks"
 
 # --- Graph traversal (Phase 6) --------------------------------------------
 MAX_HOPS = 3
@@ -129,6 +140,9 @@ class Settings(BaseSettings):
     )
     anthropic_answer_model: str = Field(
         default=DEFAULT_ANTHROPIC_ANSWER_MODEL, alias="ANTHROPIC_ANSWER_MODEL"
+    )
+    embedding_model: str = Field(
+        default=DEFAULT_EMBEDDING_MODEL, alias="GEMINI_EMBEDDING_MODEL"
     )
 
     # Provider-agnostic overrides; win over the per-provider values above.
@@ -282,6 +296,16 @@ class Settings(BaseSettings):
                 ),
             )
         return password
+
+    def require_embedding_model(self) -> str:
+        """Return the embedding model id, or explain how to discover one."""
+        model = self.embedding_model.strip()
+        if not model:
+            raise ConfigError(
+                "No embedding model id configured.",
+                hint="Run `python -m app.llm.models --write` to discover and store one.",
+            )
+        return model
 
     def require_models(self) -> tuple[str, str]:
         """Return (extraction_model, answer_model) or explain how to get them."""

@@ -14,14 +14,18 @@ from app.config import (
     PROJECT_ROOT,
     PROVIDER_GEMINI,
     SESSION_COOKIE_NAME,
+    VECTOR_TOP_K,
     get_settings,
 )
 from app.errors import AppError, ok
 from app.ingest.chunker import chunk_text
 from app.ingest.loaders import load_document
 from app.logging_conf import configure_logging, get_logger
+from app.llm.factory import get_provider
+from app.qa.answerer import answer_question
 from app.schemas import DocumentSummary
 from app.security import auth
+from app.vector.factory import get_embedder, get_vector_store
 
 log = get_logger(__name__)
 STATIC_DIR = PROJECT_ROOT / "app" / "static"
@@ -207,8 +211,15 @@ async def upload_document(file: UploadFile = File(...)) -> dict:
     document = load_document(file.filename or "", data)
     chunks = chunk_text(document.text, doc_id=document.doc_id)
 
+    # Phase 2: embed and store. Synchronous for now - Phase 8 moves this to a
+    # background job, because embedding a long document outlasts a request.
+    if chunks:
+        embedder = get_embedder()
+        vectors = embedder.embed_documents([chunk.text for chunk in chunks])
+        get_vector_store().add(chunks, vectors)
+
     log.info(
-        "Ingested %s as %s (%d chunks)",
+        "Ingested %s as %s (%d chunks, embedded)",
         document.filename,
         document.doc_id,
         len(chunks),
@@ -220,6 +231,37 @@ async def upload_document(file: UploadFile = File(...)) -> dict:
             chunk_count=len(chunks),
         ).model_dump()
     )
+
+
+class AskRequest(BaseModel):
+    """A question about the uploaded documents."""
+
+    question: str = Field(min_length=1, max_length=2000)
+
+
+@app.post("/api/ask")
+async def ask(body: AskRequest) -> dict:
+    """Answer a question from the uploaded documents.
+
+    Phase 2 is vector-only: nearest chunks by embedding similarity. Graph
+    traversal joins the evidence in Phase 6, which is what makes multi-hop
+    questions answerable.
+    """
+    store = get_vector_store()
+    if store.count() == 0:
+        return ok(
+            {
+                "answer": "No documents have been uploaded yet.",
+                "sources": [],
+                "insufficient_evidence": True,
+            }
+        )
+
+    question_vector = get_embedder().embed_query(body.question)
+    evidence = store.query(question_vector, k=VECTOR_TOP_K)
+
+    log.info("Question answered from %d chunk(s)", len(evidence))
+    return ok(answer_question(body.question, evidence, get_provider()))
 
 
 # Mounted last so /api/* always wins.
