@@ -216,6 +216,20 @@ COUNT_CHUNKS = "MATCH (c:Chunk) RETURN count(c) AS total"
 
 DOCUMENT_IDS = "MATCH (c:Chunk) RETURN collect(DISTINCT c.doc_id) AS doc_ids"
 
+# The extraction cache lives on the chunk node, so it survives a restart -
+# which the disk cache it replaced would not have (D10).
+EXTRACTED_CHUNK_IDS = """
+MATCH (c:Chunk)
+WHERE c.chunk_id IN $chunk_ids AND c.extracted_at IS NOT NULL
+RETURN collect(c.chunk_id) AS extracted
+"""
+
+MARK_CHUNKS_EXTRACTED = """
+MATCH (c:Chunk) WHERE c.chunk_id IN $chunk_ids
+SET c.extracted_at = datetime()
+RETURN count(c) AS marked
+"""
+
 CHUNK_DIMENSION = """
 MATCH (c:Chunk) WHERE c.embedding IS NOT NULL
 RETURN size(c.embedding) AS dimension LIMIT 1

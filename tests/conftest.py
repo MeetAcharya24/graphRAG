@@ -43,7 +43,12 @@ def _clear_caches() -> None:
     from app.llm.factory import get_provider
     from app.security.auth import login_limiter
     from app.db.driver import get_driver
-    from app.vector.factory import get_embedder, get_graph_store, get_vector_store
+    from app.vector.factory import (
+        get_embedder,
+        get_extraction_cache,
+        get_graph_store,
+        get_vector_store,
+    )
 
     get_settings.cache_clear()
     get_provider.cache_clear()
@@ -52,6 +57,7 @@ def _clear_caches() -> None:
     get_embedder.cache_clear()
     get_vector_store.cache_clear()
     get_graph_store.cache_clear()
+    get_extraction_cache.cache_clear()
     get_driver.cache_clear()
     # Module-level state: without this, one test's failed logins would throttle
     # the next test's.
@@ -114,6 +120,11 @@ def offline_services(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr("app.main.get_provider", lambda: provider)
     # /api/health calls this one too; unfaked, it reached the real factory.
     monkeypatch.setattr("app.main.get_graph_store", lambda: graph)
+
+    from app.graph.extractor import InMemoryExtractionCache
+
+    cache = InMemoryExtractionCache()
+    monkeypatch.setattr("app.main.get_extraction_cache", lambda: cache)
 
     # Tests reach these through the `fakes` fixture below.
     monkeypatch.setattr(
@@ -277,3 +288,17 @@ def vector_store(request):
     driver, database = request.getfixturevalue("live_driver")
     apply_schema(driver, database=database)
     return Neo4jVectorStore(driver=driver, database=database)
+
+
+@pytest.fixture
+def store_with_cache():
+    """An in-memory graph store plus an extraction cache over the same data.
+
+    The real cache is a property on the Neo4j :Chunk node (D10 moved it off
+    disk). In memory it is a plain set, with the same contract: which chunk
+    ids have already been extracted.
+    """
+    from app.graph.extractor import InMemoryExtractionCache
+    from app.graph.memory_store import InMemoryGraphStore
+
+    return InMemoryGraphStore(), InMemoryExtractionCache()

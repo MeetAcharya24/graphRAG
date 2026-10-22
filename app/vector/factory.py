@@ -55,6 +55,23 @@ def get_vector_store() -> VectorStore:
 
 
 @lru_cache(maxsize=1)
+def get_extraction_cache():
+    """Which chunks have been extracted: Neo4j when configured, else in-memory."""
+    settings = get_settings()
+
+    if not settings.neo4j_configured:
+        from app.graph.extractor import InMemoryExtractionCache
+
+        return InMemoryExtractionCache()
+
+    from app.db.driver import get_driver
+    from app.graph.extractor import Neo4jExtractionCache
+
+    _uri, _user, _password, database = settings.require_neo4j()
+    return Neo4jExtractionCache(driver=get_driver(), database=database)
+
+
+@lru_cache(maxsize=1)
 def get_graph_store() -> GraphStore:
     """The live knowledge graph: Neo4j when configured, in-memory otherwise."""
     settings = get_settings()

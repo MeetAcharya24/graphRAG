@@ -26,7 +26,13 @@ from app.llm.factory import get_provider
 from app.qa.answerer import answer_question
 from app.schemas import DocumentSummary
 from app.security import auth
-from app.vector.factory import get_embedder, get_graph_store, get_vector_store
+from app.graph.extractor import extract_from_chunks
+from app.vector.factory import (
+    get_embedder,
+    get_extraction_cache,
+    get_graph_store,
+    get_vector_store,
+)
 
 log = get_logger(__name__)
 STATIC_DIR = PROJECT_ROOT / "app" / "static"
@@ -342,6 +348,21 @@ def _embed_and_store(chunks: list) -> int:
 
     vectors = get_embedder().embed_documents([chunk.text for chunk in pending])
     store.add(pending, vectors)
+
+    # Extraction comes after the chunks are stored, because the cache marks
+    # them on the :Chunk nodes that the embedding step just created.
+    summary = extract_from_chunks(
+        pending,
+        provider=get_provider(),
+        store=get_graph_store(),
+        cache=get_extraction_cache(),
+    )
+    log.info(
+        "Extraction: %d entities, %d relations, %d batch(es) failed",
+        summary.entities_written,
+        summary.relations_written,
+        summary.batches_failed,
+    )
     return len(pending)
 
 
