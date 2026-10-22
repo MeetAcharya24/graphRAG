@@ -6,23 +6,69 @@
 
 ## Where we stopped — 2026-10-22
 
-**State:** **294 tests passing offline, 57 live against AuraDB.** Phases 0, 1, 2 and 3 complete;
-Phase 9 (password gate) brought forward and mostly complete.
+**State:** **298 tests passing offline.** Phases 0, 1, 2 and 3 complete; Phase 9 (password gate)
+brought forward and mostly complete. Working tree clean, `master` in sync with `origin/master`.
 
-**Deployed:** https://graphrag-bb8z.onrender.com — Render free web service, no card required.
-Verified live: `/api/health`, document upload, idempotent `doc_id`, the 415/413 rejection paths, and
-the password gate refusing un-authenticated requests. Cold start measured at **42 s** after 17 min
-idle (1.3 s warm).
+**Deployed:** https://graphrag-bb8z.onrender.com — Render free web service, live and gated.
 
-**⚠️ Open item:** the deployed Render app has **no Neo4j variables set yet**, so it is still running
-with in-memory storage and loses uploads on restart. Four variables need adding — see the Phase 12
-list. Until then, local runs persist and the deployed one does not.
+### ⚠️ You still need to add the Neo4j variables in Render
 
-**Next phase: Phase 4** — entity and relationship extraction. The graph exists and is empty
-(`entity_count: 0`); extraction is what fills it, and it is the first phase to spend meaningful
-Gemini quota, so D14's batching (~5 chunks per call) matters from the first line.
+Until these are set, **the deployed app runs on in-memory storage and loses every upload on
+restart** — and Render's free tier restarts after ~15 minutes idle. Local runs persist; the deployed
+one does not. The app logs a warning at startup saying so, and `/api/health` reports
+`storage.backend`.
 
----
+Render dashboard → **graphrag** → **Environment** → Add Environment Variable → **Save, rebuild, and
+deploy**:
+
+| Key | Value |
+|---|---|
+| `NEO4J_URI` | `neo4j+s://***REMOVED***` |
+| `NEO4J_USERNAME` | same as your local `.env` (your instance ID) |
+| `NEO4J_PASSWORD` | same as your local `.env` |
+| `NEO4J_DATABASE` | same as your local `.env` (your instance ID) |
+
+Copy the three sensitive values from your local `.env`. After deploying, `/api/health` should show
+`"storage": {"backend": "neo4j", "connected": true, "persistent": true, ...}`.
+
+**Also unset in Render, from earlier:** nothing — `GEMINI_API_KEY`, `APP_PASSWORD`,
+`SESSION_SECRET`, `GRAPHRAG_TRUST_PROXY` and `GRAPHRAG_COOKIE_SECURE` are all in place.
+
+### Not re-verified before stopping
+
+The **live Neo4j suite has not been re-run since the code-review fixes**. It was green (57 passed)
+on commit `5198f32`; the fixes in `0d1c81e` touched the Neo4j stores, the Cypher and the live test
+fixture, and the offline suite is green at 298 — but `pytest -m live` was interrupted and never
+completed afterwards. Run it first next session:
+
+```
+./.venv/Scripts/python.exe -m pytest -m live -q
+```
+
+A first run may fail with `SessionExpired` if the Aura instance has paused while idle; that is
+expected, and simply running it again wakes it. `0d1c81e` added that specific handling after
+observing it live.
+
+### Open items, in order
+
+1. Add the four Neo4j variables in Render (above), then confirm `/api/health` reports
+   `backend: neo4j`.
+2. Re-run `pytest -m live` to confirm the review fixes did not break the Neo4j path.
+3. **Phase 4 — entity and relationship extraction.** The graph exists and is empty
+   (`entity_count: 0`); extraction fills it. This is the first phase to spend meaningful Gemini
+   quota, so D14's batching (~5 chunks per call) matters from the first line, as does the
+   batched-attribution hazard recorded in Phase 4: with five chunks in one prompt the model must say
+   which chunk each triple came from, or `source_chunk_id` becomes a guess and R6's citations point
+   at text that does not support them.
+
+### Known gaps carried forward
+
+- `delete_orphaned_entities` cannot currently fire: deleting a document removes `:Chunk` and
+  `:Document` nodes but does not prune `mention_chunk_ids` on entities, so no entity ever looks
+  orphaned. Harmless today because nothing creates entities yet — **fix it in Phase 4**, when
+  extraction starts writing them.
+- `db.index.vector.queryNodes` is deprecated on Neo4j 5.27-aura in favour of `SEARCH`. It works
+  today; migrating is a later task.
 
 **Revision history**
 - 2026-10-19 — approved as a localhost app on the Anthropic Claude API.
@@ -32,13 +78,19 @@ Gemini quota, so D14's batching (~5 chunks per call) matters from the first line
   password gate + rate limiting, background ingestion, and a Replit deploy phase.
 - 2026-10-21 — quota budget fixed (D14): 1 MB uploads, 200-chunk ceiling, batched embeddings
   and batched extraction, so one document costs ~40-50 API calls rather than thousands.
-- 2026-10-22 — Phase 2 under way. Embedding model discovered (D16) and the silent `list[str]`
-  batching trap found by probing the API (D17).
 - 2026-10-21 — Render smoke test passed: public URL live, free, no card. Cold start measured at
   **42 s** after 17 min idle. Password gate (D11) brought forward from Phase 9.
 - 2026-10-21 — **host changed from Replit to Render (D15)** after the Replit smoke test failed:
   free-plan preview is paywalled and Deploy is a paid upgrade. The decision to test first,
   before building on the assumption, is what caught it.
+- 2026-10-22 — **Phase 2 complete**: Gemini embeddings. Model discovered (D16) and the silent
+  `list[str]` batching trap found by probing the API (D17).
+- 2026-10-22 — **Phase 3 complete**: Neo4j AuraDB holds the graph and the vector index. Documents
+  survive a restart, proven by killing the process and asking again. The conformance suite found
+  two real divergences between the fake and the database.
+- 2026-10-22 — code review of Phase 3 caught an event-loop regression in `/api/health`: the fix
+  made for `/api/ask` one commit earlier was undone by adding blocking database calls to an
+  `async def` handler. Fixed, with 13 other findings.
 
 ## Approved decisions
 
