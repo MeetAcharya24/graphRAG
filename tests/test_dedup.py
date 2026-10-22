@@ -150,13 +150,14 @@ def test_layer4_fuzzy_match_above_threshold() -> None:
 
 def test_layer4_grey_band_is_reported_but_not_matched() -> None:
     a = _entity("Northwind Systems", "ORG")
-    b = _entity("Northwind Holdings", "ORG", entity_id="ORG:northwind holdings")
+    b = _entity("Northwind Sys", "ORG", entity_id="ORG:northwind sys")
 
     result = match_pair(a, b, group=[a, b])
 
     assert result.match is None
-    # Whether this particular pair lands in the grey band or misses entirely
-    # depends on the exact ratio; the real guarantee is the next test.
+    assert result.grey is not None
+    assert result.grey.layer == "fuzzy"
+    assert 0.80 <= result.grey.score < 0.92
 
 
 def test_generational_suffix_blocks_a_match_fuzzy_would_otherwise_give() -> None:
@@ -305,18 +306,20 @@ def test_relationships_survive_rewiring_onto_the_canonical_entity() -> None:
     resolve_duplicates(store)
 
     canonical_id = make_entity_id("PERSON", "Sarah Chen")
-    relation = store.get_relation("r1")
-    assert relation is not None
-    assert relation.source_id == canonical_id
-    assert relation.target_id == helios.entity_id
+    # The merge mints a fresh rel_id for the rewired edge (see
+    # `_rewired_rel_id`'s docstring), so look it up by its new endpoints
+    # rather than assuming the old "r1" survives.
+    rewired = [r for r in store.relations_of(canonical_id) if r.type == "works_at"]
+    assert len(rewired) == 1
+    assert rewired[0].source_id == canonical_id
+    assert rewired[0].target_id == helios.entity_id
+    assert store.get_relation("r1") is None, "the old id must not linger"
 
 
 def test_grey_band_pairs_are_logged_and_left_unmerged(caplog) -> None:
     store = InMemoryGraphStore()
     store.upsert_entity(_entity("Northwind Systems", "ORG"))
-    store.upsert_entity(
-        _entity("Northwind Holdings", "ORG", entity_id="ORG:northwind holdings")
-    )
+    store.upsert_entity(_entity("Northwind Sys", "ORG", entity_id="ORG:northwind sys"))
 
     with caplog.at_level(logging.INFO):
         report = resolve_duplicates(store)
@@ -329,9 +332,7 @@ def test_grey_band_pairs_are_logged_and_left_unmerged(caplog) -> None:
 def test_a_tiebreaker_hook_can_resolve_a_grey_band_pair() -> None:
     store = InMemoryGraphStore()
     store.upsert_entity(_entity("Northwind Systems", "ORG"))
-    store.upsert_entity(
-        _entity("Northwind Holdings", "ORG", entity_id="ORG:northwind holdings")
-    )
+    store.upsert_entity(_entity("Northwind Sys", "ORG", entity_id="ORG:northwind sys"))
 
     def always_merge(a, b, layer, score) -> str:
         return min(a.entity_id, b.entity_id)
