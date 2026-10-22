@@ -321,15 +321,23 @@ def test_no_structured_violations_falls_back_to_the_message() -> None:
 # --- the thinking-budget fallback is narrow -------------------------------
 
 
-def test_only_a_thinking_400_triggers_the_no_thinking_retry() -> None:
+def test_a_400_triggers_the_no_thinking_retry_even_without_the_word_thinking() -> None:
+    """The bug this guards: some models reject `thinking_budget=0` with
+    Gemini's generic "Request contains an invalid argument" 400, which never
+    actually says "thinking" - so wording cannot be the signal. Any 400 from a
+    call that set a thinking budget is now treated as a candidate: worst case
+    it costs one harmless extra request before the real error surfaces.
+    """
     from app.llm.gemini_provider import _is_thinking_rejection
 
+    assert _is_thinking_rejection(_client_error(400, "Request contains an invalid argument."))
     assert _is_thinking_rejection(
         _client_error(400, "thinking_budget is not supported for this model")
     )
-    # A bad key or stale model id must NOT cause a second call: on a free tier
-    # whose quota counts requests, that doubles the burn.
+    assert _is_thinking_rejection(_client_error(400, "contents must not be empty"))
+    # A bad key, a stale model id, or a rate limit must NOT cause a second
+    # call: on a free tier whose quota counts requests, that doubles the burn.
     assert not _is_thinking_rejection(_client_error(403, "API key not valid"))
     assert not _is_thinking_rejection(_client_error(404, "model not found"))
-    assert not _is_thinking_rejection(_client_error(400, "contents must not be empty"))
+    assert not _is_thinking_rejection(_client_error(429, "Quota exceeded"))
     assert not _is_thinking_rejection(ValueError("unrelated"))

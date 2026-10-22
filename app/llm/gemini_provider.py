@@ -204,18 +204,20 @@ class _ThinkingUnsupported(Exception):
     """
 
 
-# Words a 400 uses when the thinking budget is the thing it objects to.
-_THINKING_REJECTION_MARKERS = ("thinking", "thinking_budget", "thinkingbudget")
-
-
 def _is_thinking_rejection(exc: Exception) -> bool:
-    """True only for a 400 that complains about the thinking configuration."""
+    """True for any 400 from a call that set a thinking budget.
+
+    Some models reject `thinking_budget=0` with Gemini's generic "Request
+    contains an invalid argument" message, which never actually says
+    "thinking" - the API gives no more specific signal to key on. Treating
+    every 400 here as a candidate costs at most one harmless extra request
+    (retried without the budget) before a genuinely unrelated 400 surfaces
+    unchanged; only the caller that already knows it set a thinking budget
+    reaches this check at all.
+    """
     if not isinstance(exc, genai_errors.ClientError):
         return False
-    if getattr(exc, "code", None) != 400:
-        return False
-    message = str(getattr(exc, "message", None) or exc).lower()
-    return any(marker in message for marker in _THINKING_REJECTION_MARKERS)
+    return getattr(exc, "code", None) == 400
 
 
 def parse_models(raw_models) -> list[ModelInfo]:
