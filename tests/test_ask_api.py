@@ -1,18 +1,17 @@
-"""Phase 2: asking a question, answered from the nearest chunks.
+"""Phase 7: `POST /api/ask` answers from the hybrid evidence bundle.
 
-Vector-only for now. Graph traversal joins the evidence in Phase 6, which is
-what makes genuinely multi-hop questions answerable; these tests pin down the
-plumbing and the citation handling that Phase 7 will extend.
+Citation handling itself is unit-tested directly against the bundle in
+`test_qa_answerer.py`; these tests pin down the route's wiring - the gate, the
+no-evidence fast path that never calls the model, and that a quota error
+reaches the client as a clean envelope rather than a stack trace.
 """
 
 from __future__ import annotations
 
-from app.qa.answerer import Answer, build_prompt, resolve_citations
-from app.schemas import Chunk
-from app.vector.base import ScoredChunk
+from app.errors import LLMQuotaExceeded
+from app.qa.answerer import Answer
 
 ACQUISITION = "Northwind Systems completed its acquisition of Helios Labs in March 2024."
-HIRE = "Helios Labs announced that Sarah Chen joins as VP of Engineering."
 LUNCH = "The cafeteria serves lunch between twelve and two."
 
 
@@ -27,36 +26,20 @@ def _ask(client, question: str):
     return client.post("/api/ask", json={"question": question})
 
 
-def _answer_call(fakes) -> dict:
-    """The last provider call, which is the answer.
-
-    Uploading triggers extraction (Phase 4), so the provider records a call per
-    batch before the question is ever asked. Indexing from the front would pick
-    up an extraction prompt.
-    """
-    calls = fakes["provider"].calls
-    assert calls, "the provider was never called"
-    return calls[-1]
+def _retrieved_chunk_id(auth_client, question: str) -> str:
+    """The real chunk_id the pipeline assigned, read back through /api/retrieve."""
+    body = auth_client.post("/api/retrieve", json={"question": question}).json()["data"]
+    return body["chunks"][0]["chunk_id"]
 
 
-def _scored(texts: list[str]) -> list[ScoredChunk]:
-    return [
-        ScoredChunk(
-            chunk=Chunk(chunk_id=f"d:{i}", doc_id="d", index=i, text=text),
-            score=1.0 - i * 0.1,
-        )
-        for i, text in enumerate(texts)
-    ]
-
-
-# --- the gate still applies ----------------------------------------------
+# --- the gate still applies ---------------------------------------------
 
 
 def test_asking_requires_a_login(client) -> None:
     assert _ask(client, "anything").status_code == 401
 
 
-# --- answering -----------------------------------------------------------
+# --- the no-evidence fast path --------------------------------------------
 
 
 def test_asking_with_no_documents_says_so_without_calling_the_model(
@@ -68,13 +51,22 @@ def test_asking_with_no_documents_says_so_without_calling_the_model(
     data = response.json()["data"]
     assert data["insufficient_evidence"] is True
     assert data["sources"] == []
-    assert fakes["provider"].calls == [], "no documents must cost no LLM call"
+    assert data["paths"] == []
+    assert fakes["provider"].calls == [], "no evidence must cost no LLM call"
 
 
-def test_a_question_is_answered_from_an_uploaded_document(auth_client, fakes) -> None:
+# --- answering from an uploaded document ----------------------------------
+
+
+def test_a_question_is_answered_and_cited_by_chunk_id(auth_client, fakes) -> None:
     _upload(auth_client, "deal.txt", ACQUISITION)
+    chunk_id = _retrieved_chunk_id(auth_client, "Who acquired Helios Labs?")
     fakes["provider"].queue(
-        Answer(answer="Northwind Systems acquired Helios Labs.", used_sources=[1])
+        Answer(
+            answer="Northwind Systems acquired Helios Labs.",
+            used_chunk_ids=[chunk_id],
+            confidence=0.8,
+        )
     )
 
     response = _ask(auth_client, "Who acquired Helios Labs?")
@@ -82,50 +74,27 @@ def test_a_question_is_answered_from_an_uploaded_document(auth_client, fakes) ->
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["answer"] == "Northwind Systems acquired Helios Labs."
+    assert data["confidence"] == 0.8
     assert len(data["sources"]) == 1
-    assert data["sources"][0]["doc_id"]
+    assert data["sources"][0]["chunk_id"] == chunk_id
     assert "Northwind" in data["sources"][0]["excerpt"]
 
 
-def test_the_answer_model_is_the_discovered_one(auth_client, fakes) -> None:
+def test_an_invented_citation_does_not_reach_the_response(auth_client, fakes) -> None:
     _upload(auth_client, "deal.txt", ACQUISITION)
-    fakes["provider"].queue(Answer(answer="x", used_sources=[1]))
+    fakes["provider"].queue(
+        Answer(answer="Something.", used_chunk_ids=["does-not-exist:9"])
+    )
 
-    _ask(auth_client, "Who acquired Helios Labs?")
+    data = _ask(auth_client, "Who acquired Helios Labs?").json()["data"]
 
-    assert _answer_call(fakes)["model"] == "test-flash-model"
-
-
-def test_the_prompt_carries_the_retrieved_text(auth_client, fakes) -> None:
-    _upload(auth_client, "deal.txt", ACQUISITION)
-    fakes["provider"].queue(Answer(answer="x", used_sources=[1]))
-
-    _ask(auth_client, "Who acquired Helios Labs?")
-
-    prompt = _answer_call(fakes)["prompt"]
-    assert "Northwind Systems" in prompt
-    assert "Who acquired Helios Labs?" in prompt
-
-
-def test_the_system_prompt_forbids_outside_knowledge(auth_client, fakes) -> None:
-    _upload(auth_client, "deal.txt", ACQUISITION)
-    fakes["provider"].queue(Answer(answer="x", used_sources=[1]))
-
-    _ask(auth_client, "Who acquired Helios Labs?")
-
-    system = _answer_call(fakes)["system"].lower()
-    assert "only" in system
-    assert "insufficient_evidence" in system
+    assert data["sources"] == [], "an invented citation must never be rendered"
 
 
 def test_insufficient_evidence_is_passed_through(auth_client, fakes) -> None:
     _upload(auth_client, "lunch.txt", LUNCH)
     fakes["provider"].queue(
-        Answer(
-            answer="The documents do not cover that.",
-            used_sources=[],
-            insufficient_evidence=True,
-        )
+        Answer(answer="The documents do not cover that.", insufficient_evidence=True)
     )
 
     data = _ask(auth_client, "What is the revenue?").json()["data"]
@@ -149,90 +118,16 @@ def test_an_absurdly_long_question_is_rejected(auth_client) -> None:
     assert response.status_code == 422
 
 
-# --- citations are resolved, not trusted ---------------------------------
+# --- failures reach the client as a clean envelope, not a stack trace ----
 
 
-def test_citations_map_source_numbers_back_to_chunks() -> None:
-    evidence = _scored([ACQUISITION, HIRE, LUNCH])
-
-    resolved = resolve_citations([2, 1], evidence)
-
-    assert [c.chunk_id for c in resolved] == ["d:1", "d:0"]
-
-
-def test_an_invented_source_number_is_dropped() -> None:
-    """Phase 7 extends this; the habit starts here."""
-    evidence = _scored([ACQUISITION])
-
-    assert resolve_citations([1, 7, 0, -3], evidence) == [evidence[0].chunk]
-
-
-def test_duplicate_citations_are_collapsed() -> None:
-    evidence = _scored([ACQUISITION, HIRE])
-
-    assert len(resolve_citations([1, 1, 2], evidence)) == 2
-
-
-def test_no_citations_resolves_to_nothing() -> None:
-    assert resolve_citations([], _scored([ACQUISITION])) == []
-
-
-def test_an_out_of_range_citation_does_not_reach_the_response(
-    auth_client, fakes
-) -> None:
+def test_a_quota_error_is_a_clean_envelope_not_a_stack_trace(auth_client, fakes) -> None:
     _upload(auth_client, "deal.txt", ACQUISITION)
-    # The model claims source 9, which was never sent.
-    fakes["provider"].queue(Answer(answer="Something.", used_sources=[9]))
+    fakes["provider"].queue(LLMQuotaExceeded("Daily quota exhausted."))
 
-    data = _ask(auth_client, "Who acquired Helios Labs?").json()["data"]
+    response = _ask(auth_client, "Who acquired Helios Labs?")
 
-    assert data["sources"] == [], "an invented citation must never be rendered"
-
-
-# --- the prompt -----------------------------------------------------------
-
-
-def test_sources_are_numbered_from_one() -> None:
-    prompt = build_prompt("q?", _scored([ACQUISITION, HIRE]))
-
-    assert "[1] " in prompt
-    assert "[2] " in prompt
-    assert "[0] " not in prompt
-
-
-def test_the_question_comes_after_the_sources() -> None:
-    """Instruction-last reads better to the model than instruction-first here."""
-    prompt = build_prompt("Who acquired Helios Labs?", _scored([ACQUISITION]))
-
-    assert prompt.index("Sources:") < prompt.index("Question:")
-
-
-# --- retrieval ordering --------------------------------------------------
-
-
-def test_the_most_relevant_document_is_cited(auth_client, fakes) -> None:
-    """Three documents in, the question should surface the matching one."""
-    _upload(auth_client, "lunch.txt", LUNCH)
-    _upload(auth_client, "deal.txt", ACQUISITION)
-    _upload(auth_client, "hire.txt", HIRE)
-    fakes["provider"].queue(Answer(answer="Northwind.", used_sources=[1]))
-
-    _ask(auth_client, "Northwind Systems acquisition of Helios Labs")
-
-    prompt = _answer_call(fakes)["prompt"]
-    first_source = prompt.split("[1] ", 1)[1].split("\n", 1)[0]
-    assert "Northwind" in first_source, f"top source was: {first_source!r}"
-
-
-def test_a_boolean_citation_is_dropped() -> None:
-    """`bool` subclasses `int`, so True would otherwise cite source 1."""
-    evidence = _scored([ACQUISITION, HIRE])
-
-    assert resolve_citations([True], evidence) == []
-    assert resolve_citations([False], evidence) == []
-
-
-def test_a_non_integer_citation_is_dropped() -> None:
-    evidence = _scored([ACQUISITION])
-
-    assert resolve_citations(["1", 1.5, None], evidence) == []
+    assert response.status_code == 429
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["code"] == "llm_quota_exceeded"
