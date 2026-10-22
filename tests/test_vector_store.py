@@ -241,3 +241,18 @@ def test_vectors_are_stored_as_given(store, embedder) -> None:
 
     assert results[0].score == pytest.approx(1.0), "a vector must match itself exactly"
     assert not math.isnan(results[0].score)
+
+
+def test_tied_scores_keep_document_order(store, embedder) -> None:
+    """Identical text scores identically; order must not be reversed.
+
+    A single reverse=True on a (score, chunk_id) key sorts the tie-breaker
+    backwards too, putting chunk 9 ahead of chunk 0.
+    """
+    identical = ["the very same sentence"] * 10
+    _add(store, embedder, "doc1", identical)
+
+    results = store.query(embedder.embed_query("the very same sentence"), k=10)
+    indexes = [r.chunk.index for r in results]
+
+    assert indexes == sorted(indexes), f"tied results came back as {indexes}"

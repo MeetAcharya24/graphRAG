@@ -27,6 +27,7 @@ _SETTINGS_ENV_VARS = (
     "SESSION_SECRET",
     "GRAPHRAG_COOKIE_SECURE",
     "GRAPHRAG_TRUST_PROXY",
+    "GEMINI_EMBEDDING_MODEL",
 )
 
 
@@ -34,9 +35,14 @@ def _clear_caches() -> None:
     from app.config import get_settings
     from app.llm.factory import get_provider
     from app.security.auth import login_limiter
+    from app.vector.factory import get_embedder, get_vector_store
 
     get_settings.cache_clear()
     get_provider.cache_clear()
+    # Cached singletons: without clearing, the first test to touch the factory
+    # directly would hold a real Gemini client for the rest of the session.
+    get_embedder.cache_clear()
+    get_vector_store.cache_clear()
     # Module-level state: without this, one test's failed logins would throttle
     # the next test's.
     login_limiter.clear()

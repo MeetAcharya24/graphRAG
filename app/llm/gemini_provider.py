@@ -92,6 +92,17 @@ def classify(model_id: str, supported_actions: list[str] | None) -> str | None:
     """
     lowered = strip_prefix(model_id.lower())
 
+    # Paid and non-text exclusions come FIRST, before any capability check.
+    # Ordered the other way, a paid embedding model advertising embedContent
+    # would be classified as free, win its tier, and be written into config by
+    # --write - silently billing the user, against D5/D6.
+    if any(marker in lowered for marker in _PAID_MARKERS):
+        return None
+    if any(marker in lowered for marker in _NON_TEXT_MARKERS):
+        return None
+    if _NON_TEXT_SEGMENTS.intersection(lowered.split("-")):
+        return None
+
     # The embedding tier is identified by capability, not by name: these models
     # advertise embedContent instead of generateContent (D16).
     if supported_actions:
@@ -104,12 +115,6 @@ def classify(model_id: str, supported_actions: list[str] | None) -> str | None:
         # the name, which is the only signal left.
         return FAMILY_EMBED
 
-    if any(marker in lowered for marker in _PAID_MARKERS):
-        return None
-    if any(marker in lowered for marker in _NON_TEXT_MARKERS):
-        return None
-    if _NON_TEXT_SEGMENTS.intersection(lowered.split("-")):
-        return None
     if "flash-lite" in lowered:
         return FAMILY_CHEAP
     if "flash" in lowered:

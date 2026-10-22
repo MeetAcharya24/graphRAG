@@ -191,21 +191,52 @@ class Settings(BaseSettings):
     def provider(self) -> str:
         return self.llm_provider
 
+    @staticmethod
+    def _first_set(*candidates: str) -> str:
+        """The first non-blank candidate.
+
+        A blank environment variable means "not configured", not "configured to
+        nothing". Without this, `.env.example`'s empty GEMINI_ANSWER_MODEL=
+        shadows the id discovery just wrote into config.py, and every request
+        fails with "no model configured" - the exact opposite of what copying
+        the template should do.
+        """
+        for candidate in candidates:
+            if candidate and candidate.strip():
+                return candidate.strip()
+        return ""
+
     @property
     def extraction_model(self) -> str:
-        if self.extraction_model_override.strip():
-            return self.extraction_model_override.strip()
         if self.provider == PROVIDER_GEMINI:
-            return self.gemini_extraction_model.strip()
-        return self.anthropic_extraction_model.strip()
+            return self._first_set(
+                self.extraction_model_override,
+                self.gemini_extraction_model,
+                DEFAULT_GEMINI_EXTRACTION_MODEL,
+            )
+        return self._first_set(
+            self.extraction_model_override,
+            self.anthropic_extraction_model,
+            DEFAULT_ANTHROPIC_EXTRACTION_MODEL,
+        )
 
     @property
     def answer_model(self) -> str:
-        if self.answer_model_override.strip():
-            return self.answer_model_override.strip()
         if self.provider == PROVIDER_GEMINI:
-            return self.gemini_answer_model.strip()
-        return self.anthropic_answer_model.strip()
+            return self._first_set(
+                self.answer_model_override,
+                self.gemini_answer_model,
+                DEFAULT_GEMINI_ANSWER_MODEL,
+            )
+        return self._first_set(
+            self.answer_model_override,
+            self.anthropic_answer_model,
+            DEFAULT_ANTHROPIC_ANSWER_MODEL,
+        )
+
+    @property
+    def resolved_embedding_model(self) -> str:
+        return self._first_set(self.embedding_model, DEFAULT_EMBEDDING_MODEL)
 
     # --- derived paths ---
 
@@ -214,10 +245,6 @@ class Settings(BaseSettings):
         if self.data_dir.is_absolute():
             return self.data_dir
         return PROJECT_ROOT / self.data_dir
-
-    @property
-    def chroma_dir(self) -> Path:
-        return self.resolved_data_dir / "chroma"
 
     @property
     def uploads_dir(self) -> Path:
@@ -240,12 +267,9 @@ class Settings(BaseSettings):
         return self.resolved_data_dir / "dedup_candidates.jsonl"
 
     def ensure_dirs(self) -> None:
-        for path in (
-            self.resolved_data_dir,
-            self.chroma_dir,
-            self.uploads_dir,
-            self.extraction_cache_dir,
-        ):
+        # D10 keeps application data out of the filesystem; what remains is
+        # only scratch space, and Phase 3 removes the rest.
+        for path in (self.resolved_data_dir,):
             path.mkdir(parents=True, exist_ok=True)
 
     # --- validation ---
@@ -299,7 +323,7 @@ class Settings(BaseSettings):
 
     def require_embedding_model(self) -> str:
         """Return the embedding model id, or explain how to discover one."""
-        model = self.embedding_model.strip()
+        model = self.resolved_embedding_model
         if not model:
             raise ConfigError(
                 "No embedding model id configured.",

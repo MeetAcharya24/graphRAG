@@ -465,3 +465,24 @@ def test_text_models_do_not_leak_into_the_embedding_tier() -> None:
     )
 
     assert newest(parsed, FAMILY_EMBED) is None
+
+
+def test_a_paid_embedding_model_is_never_classified_as_free() -> None:
+    """Ordering bug: the capability check ran before the paid filter.
+
+    A paid embedding model advertising embedContent was classified as the free
+    embed tier, could win its tier, and would be written into config.py by
+    --write - silently billing the user, against D5/D6.
+    """
+    assert gemini_classify("gemini-embedding-pro", ["embedContent"]) is None
+    assert gemini_classify("gemini-pro-embedding-2", ["embedContent"]) is None
+
+
+def test_a_non_text_model_is_never_classified_as_an_embedder() -> None:
+    assert gemini_classify("imagen-4.0-embedding", ["embedContent"]) is None
+    assert gemini_classify("gemini-2.5-flash-audio", ["embedContent"]) is None
+
+
+def test_the_free_embedding_model_still_classifies() -> None:
+    """The filter must not be so blunt it rejects what we actually use."""
+    assert gemini_classify("gemini-embedding-2", ["embedContent"]) == FAMILY_EMBED

@@ -210,3 +210,17 @@ def test_the_most_relevant_document_is_cited(auth_client, fakes) -> None:
     prompt = fakes["provider"].calls[0]["prompt"]
     first_source = prompt.split("[1] ", 1)[1].split("\n", 1)[0]
     assert "Northwind" in first_source, f"top source was: {first_source!r}"
+
+
+def test_a_boolean_citation_is_dropped() -> None:
+    """`bool` subclasses `int`, so True would otherwise cite source 1."""
+    evidence = _scored([ACQUISITION, HIRE])
+
+    assert resolve_citations([True], evidence) == []
+    assert resolve_citations([False], evidence) == []
+
+
+def test_a_non_integer_citation_is_dropped() -> None:
+    evidence = _scored([ACQUISITION])
+
+    assert resolve_citations(["1", 1.5, None], evidence) == []

@@ -9,6 +9,7 @@ from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from app.config import (
     PROJECT_ROOT,
@@ -83,6 +84,30 @@ app = FastAPI(
 async def app_error_handler(_request: Request, exc: AppError) -> JSONResponse:
     log.warning("%s: %s", exc.code, exc.message)
     return JSONResponse(status_code=exc.status_code, content=exc.to_envelope())
+
+
+@app.exception_handler(Exception)
+async def unexpected_error_handler(_request: Request, exc: Exception) -> JSONResponse:
+    """Anything untyped still answers in the project's envelope.
+
+    Internal invariants (a dimension mismatch, a bad vector length) raise plain
+    ValueError. Without this they reach the client as an unenveloped 500 with a
+    traceback, which both breaks the response contract and leaks internals from
+    a publicly reachable app.
+    """
+    log.exception("Unhandled error serving a request")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "ok": False,
+            "data": None,
+            "error": {
+                "code": "internal_error",
+                "message": "Something went wrong handling that request.",
+                "hint": "Check the server logs for details.",
+            },
+        },
+    )
 
 
 @app.get("/api/health")
@@ -200,29 +225,49 @@ async def logout() -> JSONResponse:
     return response
 
 
+def _embed_and_store(chunks: list) -> int:
+    """Embed chunks and store them. Returns how many were newly embedded.
+
+    Blocking: runs in a worker thread, never on the event loop.
+    """
+    store = get_vector_store()
+
+    # Chunk ids are deterministic, so a re-upload of identical content is
+    # already stored. Skipping it before embedding matters: on a free tier a
+    # double-clicked upload would otherwise spend the quota twice.
+    already = {chunk.chunk_id for chunk in store.get_by_ids([c.chunk_id for c in chunks])}
+    pending = [chunk for chunk in chunks if chunk.chunk_id not in already]
+    if not pending:
+        log.info("All %d chunk(s) already embedded; skipping the API call", len(chunks))
+        return 0
+
+    vectors = get_embedder().embed_documents([chunk.text for chunk in pending])
+    store.add(pending, vectors)
+    return len(pending)
+
+
 @app.post("/api/documents")
 async def upload_document(file: UploadFile = File(...)) -> dict:
-    """Read an uploaded file and report how it chunked.
+    """Read an uploaded file, embed it, and report how it chunked.
 
-    Phase 1 stores nothing: embedding and graph extraction arrive in Phases 2
-    and 4. The response shape is already final.
+    The embedding calls are blocking HTTP, so they are pushed to a worker
+    thread: this process serves every request on one event loop, and a
+    rate-limited retry sleeping on it would freeze the whole app - including
+    the health check Render uses to decide the instance is alive. Phase 8
+    moves ingestion to a background job entirely.
     """
     data = await file.read()
     document = load_document(file.filename or "", data)
     chunks = chunk_text(document.text, doc_id=document.doc_id)
 
-    # Phase 2: embed and store. Synchronous for now - Phase 8 moves this to a
-    # background job, because embedding a long document outlasts a request.
-    if chunks:
-        embedder = get_embedder()
-        vectors = embedder.embed_documents([chunk.text for chunk in chunks])
-        get_vector_store().add(chunks, vectors)
+    embedded = await run_in_threadpool(_embed_and_store, chunks) if chunks else 0
 
     log.info(
-        "Ingested %s as %s (%d chunks, embedded)",
+        "Ingested %s as %s (%d chunks, %d newly embedded)",
         document.filename,
         document.doc_id,
         len(chunks),
+        embedded,
     )
     return ok(
         DocumentSummary(
@@ -240,8 +285,13 @@ class AskRequest(BaseModel):
 
 
 @app.post("/api/ask")
-async def ask(body: AskRequest) -> dict:
+def ask(body: AskRequest) -> dict:
     """Answer a question from the uploaded documents.
+
+    Deliberately `def`, not `async def`: embedding the question and calling the
+    answer model are blocking HTTP, and `with_retry` sleeps between attempts.
+    On the event loop that would stall every other request for up to minutes.
+    FastAPI runs a sync handler in its threadpool, which is what we want.
 
     Phase 2 is vector-only: nearest chunks by embedding similarity. Graph
     traversal joins the evidence in Phase 6, which is what makes multi-hop
