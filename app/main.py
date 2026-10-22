@@ -27,6 +27,7 @@ from app.qa.answerer import answer_question
 from app.schemas import DocumentSummary
 from app.security import auth
 from app.graph.extractor import extract_from_chunks
+from app.graph.retrieval import hybrid_retrieve
 from app.vector.factory import (
     get_embedder,
     get_extraction_cache,
@@ -432,6 +433,28 @@ def ask(body: AskRequest) -> dict:
 
     log.info("Question answered from %d chunk(s)", len(evidence))
     return ok(answer_question(body.question, evidence, get_provider()))
+
+
+class RetrieveRequest(BaseModel):
+    """A question to run hybrid retrieval for, without answering it."""
+
+    question: str = Field(min_length=1, max_length=2000)
+
+
+@app.post("/api/retrieve")
+def retrieve(body: RetrieveRequest) -> dict:
+    """Debug route: the raw evidence bundle Phase 6 assembles for a question.
+
+    Deliberately `def`, not `async def`, for the same reason as `/api/ask`:
+    embedding the question is blocking HTTP.
+    """
+    bundle = hybrid_retrieve(
+        body.question,
+        store=get_graph_store(),
+        vector_store=get_vector_store(),
+        embedder=get_embedder(),
+    )
+    return ok(bundle.model_dump())
 
 
 # Mounted last so /api/* always wins.

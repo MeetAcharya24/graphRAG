@@ -90,3 +90,33 @@ class GraphPath(_Frozen):
     @property
     def hops(self) -> int:
         return len(self.edges)
+
+
+# --- hybrid retrieval (Phase 6) -------------------------------------------
+
+
+class EvidenceChunk(_Frozen):
+    """One chunk in a retrieved bundle, with the score it earned.
+
+    The score may come from vector similarity, from the strongest graph edge
+    whose `source_chunk_id` points at it, or whichever of the two is higher -
+    there is one ranking, not two competing ones.
+    """
+
+    chunk_id: str
+    doc_id: str
+    text: str
+    score: float
+
+
+class EvidenceBundle(_Frozen):
+    """Everything hybrid retrieval found for a question (Phase 6).
+
+    What Phase 7's answer synthesis reads from: `chunks` for the source text,
+    `paths` for rendering the multi-hop chain the answer is allowed to cite.
+    """
+
+    chunks: tuple[EvidenceChunk, ...] = ()
+    entities: tuple[Entity, ...] = ()
+    relations: tuple[Relation, ...] = ()
+    paths: tuple[GraphPath, ...] = ()

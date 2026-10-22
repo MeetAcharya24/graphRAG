@@ -66,6 +66,9 @@ MAX_SUBGRAPH_NODES = 60
 MAX_ENTITY_DEGREE = 25
 PATH_BOOST = 1.5
 SEED_NAME_MATCH_THRESHOLD = 0.85
+# The hard context budget: the most evidence chunks handed to answer synthesis,
+# regardless of how many the vector search and graph expansion together find.
+MAX_EVIDENCE_CHUNKS = 20
 
 # --- Deduplication (Phase 5, layers 1-5 only; see decision D2) ------------
 DEDUP_FUZZY_MERGE_THRESHOLD = 92

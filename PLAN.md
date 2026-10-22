@@ -6,8 +6,29 @@
 
 ## Where we stopped — 2026-10-22
 
-**State:** **370 tests passing offline** (up from 327). Phases 0–5 complete; Phase 9 (password
+**State:** **385 tests passing offline** (up from 370). Phases 0–6 complete; Phase 9 (password
 gate) brought forward and mostly complete. Working tree clean.
+
+**Phase 6 complete: hybrid retrieval & multi-hop traversal.** `app/graph/retrieval.py` —
+`seed_entities` (vector-hit mentions ∪ fuzzy name/alias matches against same-length question
+windows, to avoid short-name false positives from naive partial-ratio matching), `expand_subgraph`
+(hop-decayed BFS built entirely out of `GraphStore.relations_of`/`get_entity`, same discipline as
+Phase 5's merge — no Cypher of its own), and `_boost_shortest_paths` (shortest walks between every
+seed pair, merged in and boosted regardless of the node/degree caps, since a path connecting two
+seeds *is* the multi-hop answer). `hybrid_retrieve` unions vector hits with the chunks behind
+surviving graph edges into an `EvidenceBundle` (new in `app/schemas.py`), ranked and truncated to a
+hard `MAX_EVIDENCE_CHUNKS` context budget. Debug route `POST /api/retrieve` added to `app/main.py`.
+
+All of Phase 6's listed guarantees are covered in `tests/test_retrieval.py` (13 tests) and
+`tests/test_retrieve_api.py` (3 tests): 3-hop reachability from a single seed, hop-decay ordering,
+the node budget, the hub degree cap (highest-confidence edges survive, not an arbitrary slice), zero
+seeds raising nothing, reproducibility, and — the one that took two redesigns to get right — a case
+where *both* ends of the path are degree-capped out of plain expansion and only
+`_boost_shortest_paths` recovers it. The first two versions of that test passed for the wrong
+reason: with both path endpoints as seeds, bidirectional BFS kept re-discovering the path through
+whichever side wasn't capped, so the "boost increases the score" and "one capped hub" versions were
+both no-ops in disguise. Capping the degree on hubs at *both* ends of the path was what finally
+forced a genuine dependency on the boost step.
 
 **Phase 5 complete: entity deduplication (layers 1–5, D2).** `app/graph/dedup.py` — `dedup_key`
 (a stricter normal form than `normalize_name`: strips personal titles and corporate suffixes,
@@ -45,12 +66,11 @@ id from its new (source, target, type, chunk) tuple.
 - `db.index.vector.queryNodes` is deprecated on Neo4j 5.27-aura in favour of `SEARCH`. Still works;
   migrating is a later task.
 
-### Next phase: Phase 6 — hybrid retrieval & multi-hop traversal
+### Next phase: Phase 7 — answer synthesis with verified citations
 
-Embed the question, seed from vector search + name/alias matches, expand 1–3 hops with hop-decay
-scoring and a hub-degree cap, boost shortest paths between seed pairs, union the resulting chunks
-into an `EvidenceBundle`. Debug route `POST /api/retrieve`. See the Phase 6 section below for the
-full spec and test list.
+Hand the `EvidenceBundle` to the answer model, verify every claimed citation against what was
+actually retrieved, and render paths server-side so a hallucinated source can never reach the UI.
+See the Phase 7 section above for the full spec and test list.
 
 **Revision history**
 - 2026-10-19 — approved as a localhost app on the Anthropic Claude API.
@@ -73,6 +93,8 @@ full spec and test list.
 - 2026-10-22 — code review of Phase 3 caught an event-loop regression in `/api/health`: the fix
   made for `/api/ask` one commit earlier was undone by adding blocking database calls to an
   `async def` handler. Fixed, with 13 other findings.
+- 2026-10-22 — **Phase 6 complete**: hybrid retrieval and multi-hop traversal, built entirely out
+  of existing `GraphStore` primitives. `POST /api/retrieve` debug route added.
 
 ## Approved decisions
 
