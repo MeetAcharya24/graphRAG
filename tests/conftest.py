@@ -73,6 +73,43 @@ def isolated_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterat
     _clear_caches()
 
 
+@pytest.fixture(autouse=True)
+def offline_services(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Swap the real Gemini embedder, store and provider for offline fakes.
+
+    Patched on `app.main`, not on the factory module: main imports the factory
+    functions by name, so rebinding them there is what the routes actually see.
+    A fresh store per test keeps uploads from leaking between them.
+    """
+    from app.llm.fake import FakeLLM
+    from app.vector.fake import FakeEmbedder
+    from app.vector.memory_store import InMemoryVectorStore
+
+    embedder = FakeEmbedder()
+    store = InMemoryVectorStore()
+    provider = FakeLLM()
+
+    monkeypatch.setattr("app.main.get_embedder", lambda: embedder)
+    monkeypatch.setattr("app.main.get_vector_store", lambda: store)
+    monkeypatch.setattr("app.main.get_provider", lambda: provider)
+
+    # Tests reach these through the `fakes` fixture below.
+    monkeypatch.setattr(
+        "app.main._test_fakes",
+        {"embedder": embedder, "store": store, "provider": provider},
+        raising=False,
+    )
+    yield
+
+
+@pytest.fixture
+def fakes():
+    """The fake embedder, store and provider the current test is running on."""
+    import app.main
+
+    return app.main._test_fakes
+
+
 @pytest.fixture
 def client():
     """A FastAPI test client with lifespan startup run."""

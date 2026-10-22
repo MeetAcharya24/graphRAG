@@ -14,7 +14,13 @@ import pytest
 
 from app.config import PROVIDER_ANTHROPIC, PROVIDER_GEMINI
 from app.errors import ConfigError
-from app.llm.base import FAMILY_CHEAP, FAMILY_STRONG, newest, parse_version_key
+from app.llm.base import (
+    FAMILY_CHEAP,
+    FAMILY_EMBED,
+    FAMILY_STRONG,
+    newest,
+    parse_version_key,
+)
 from app.llm.gemini_provider import classify as gemini_classify
 from app.llm.gemini_provider import parse_models as gemini_parse
 from app.llm.gemini_provider import strip_prefix
@@ -128,8 +134,16 @@ def test_non_text_models_are_excluded() -> None:
         assert gemini_classify(model_id, GENERATE) is None, model_id
 
 
-def test_models_that_cannot_generate_content_are_excluded() -> None:
-    assert gemini_classify("gemini-2.5-flash", ["embedContent"]) is None
+def test_a_model_advertising_embed_content_is_the_embedding_tier() -> None:
+    """D16: the embedding tier is found by capability, not by name."""
+    assert gemini_classify("gemini-embedding-2", ["embedContent"]) == FAMILY_EMBED
+    # Even a flash-named model, if it only embeds, belongs to the embed tier.
+    assert gemini_classify("gemini-2.5-flash", ["embedContent"]) == FAMILY_EMBED
+
+
+def test_models_that_can_neither_generate_nor_embed_are_excluded() -> None:
+    assert gemini_classify("some-model", ["predict"]) is None
+    assert gemini_classify("gemini-2.5-flash", ["countTokens"]) is None
 
 
 def test_image_generation_models_are_excluded() -> None:
@@ -157,6 +171,8 @@ def test_parse_models_keeps_only_free_text_families() -> None:
         "gemini-2.5-flash-lite",
         "gemini-3.0-flash-preview-09-2025",
         "gemini-omni-1.1-flash",
+        # Kept since D16, as the embedding tier rather than a text tier.
+        "text-embedding-004",
     }
 
 
@@ -405,3 +421,47 @@ def test_write_choices_rejects_an_unknown_provider(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError, match="Unknown provider"):
         write_choices("llama", "a", "b", config_path=config)
+
+
+# --- the embedding tier (D16) ---------------------------------------------
+
+
+EMBED_RESPONSE = [
+    {"name": "models/gemini-embedding-2", "supported_actions": ["embedContent"]},
+    {"name": "models/gemini-embedding-001", "supported_actions": ["embedContent"]},
+    {
+        "name": "models/gemini-embedding-2-preview",
+        "supported_actions": ["embedContent"],
+    },
+]
+
+
+def test_the_newest_stable_embedding_model_is_chosen() -> None:
+    """The exact shape the live key returned on 2026-10-22."""
+    parsed = gemini_parse(EMBED_RESPONSE)
+
+    assert len(parsed) == 3
+    assert newest(parsed, FAMILY_EMBED).id == "gemini-embedding-2"
+
+
+def test_an_embedding_preview_never_beats_a_stable_one() -> None:
+    chosen = newest(gemini_parse(EMBED_RESPONSE), FAMILY_EMBED)
+
+    assert chosen.is_stable is True
+    assert "preview" not in chosen.id
+
+
+def test_embedding_models_do_not_leak_into_the_text_tiers() -> None:
+    """An embedding model used for answers would fail every request."""
+    parsed = gemini_parse(EMBED_RESPONSE)
+
+    assert newest(parsed, FAMILY_CHEAP) is None
+    assert newest(parsed, FAMILY_STRONG) is None
+
+
+def test_text_models_do_not_leak_into_the_embedding_tier() -> None:
+    parsed = gemini_parse(
+        [{"name": "models/gemini-3.0-flash", "supported_actions": GENERATE}]
+    )
+
+    assert newest(parsed, FAMILY_EMBED) is None

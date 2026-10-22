@@ -22,7 +22,13 @@ from typing import Sequence
 
 from app.config import PROJECT_ROOT, PROVIDER_ANTHROPIC, PROVIDER_GEMINI, get_settings
 from app.errors import AppError, ConfigError
-from app.llm.base import FAMILY_CHEAP, FAMILY_STRONG, ModelInfo, newest
+from app.llm.base import (
+    FAMILY_CHEAP,
+    FAMILY_EMBED,
+    FAMILY_STRONG,
+    ModelInfo,
+    newest,
+)
 
 _CONFIG_PATH = PROJECT_ROOT / "app" / "config.py"
 
@@ -36,6 +42,11 @@ _PROVIDER_CONFIG = {
         "strong_label": "Flash (free tier)",
         "env_extraction": "GEMINI_EXTRACTION_MODEL",
         "env_answer": "GEMINI_ANSWER_MODEL",
+        # Only Gemini supplies embeddings in this app (D8), so only this
+        # provider has an embedding tier to discover.
+        "embed_const": "DEFAULT_EMBEDDING_MODEL",
+        "embed_label": "Embedding (free tier)",
+        "env_embed": "GEMINI_EMBEDDING_MODEL",
     },
     PROVIDER_ANTHROPIC: {
         "extraction_const": "DEFAULT_ANTHROPIC_EXTRACTION_MODEL",
@@ -75,8 +86,13 @@ def write_choices(
     extraction_id: str,
     answer_id: str,
     config_path: Path | None = None,
+    embedding_id: str | None = None,
 ) -> Path:
-    """Rewrite that provider's two model-id constants in config.py."""
+    """Rewrite that provider's model-id constants in config.py.
+
+    `embedding_id` is written only when the provider supplies embeddings and a
+    model was found, so an Anthropic run never clears the Gemini value.
+    """
     meta = _PROVIDER_CONFIG.get(provider_name)
     if meta is None:
         raise ConfigError(f"Unknown provider for model discovery: {provider_name!r}")
@@ -84,10 +100,14 @@ def write_choices(
     path = config_path or _CONFIG_PATH
     source = path.read_text(encoding="utf-8")
 
-    for const, value in (
+    targets = [
         (meta["extraction_const"], extraction_id),
         (meta["answer_const"], answer_id),
-    ):
+    ]
+    if embedding_id and meta.get("embed_const"):
+        targets.append((meta["embed_const"], embedding_id))
+
+    for const, value in targets:
         pattern = re.compile(rf'^{const} = ".*"$', re.MULTILINE)
         source, count = pattern.subn(f'{const} = "{value}"', source, count=1)
         if not count:
@@ -160,6 +180,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(_render_table([m for m in models if m.family == FAMILY_CHEAP]))
     print(f"ANSWER tier - {meta['strong_label']}:")
     print(_render_table([m for m in models if m.family == FAMILY_STRONG]))
+    if meta.get("embed_label"):
+        print(f"EMBEDDING tier - {meta['embed_label']}:")
+        print(_render_table([m for m in models if m.family == FAMILY_EMBED]))
 
     extraction = newest(models, FAMILY_CHEAP)
     answer = newest(models, FAMILY_STRONG)
@@ -186,17 +209,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 1
 
+    embedding = newest(models, FAMILY_EMBED) if meta.get("embed_const") else None
+
     print("Chosen (newest stable in each tier):")
     print(f"  extraction (per-chunk, cheap) : {extraction.id}")
-    print(f"  answers    (final synthesis)  : {answer.id}\n")
+    print(f"  answers    (final synthesis)  : {answer.id}")
+    if meta.get("embed_const"):
+        chosen_embed = embedding.id if embedding else "(none found)"
+        print(f"  embeddings (retrieval)        : {chosen_embed}")
+    print()
 
     if args.write:
-        path = write_choices(provider_name, extraction.id, answer.id)
+        path = write_choices(
+            provider_name,
+            extraction.id,
+            answer.id,
+            embedding_id=embedding.id if embedding else None,
+        )
         print(f"Written into {path}")
     else:
         print("Re-run with --write to store these in app/config.py, or set in .env:")
         print(f"  {meta['env_extraction']}={extraction.id}")
         print(f"  {meta['env_answer']}={answer.id}")
+        if embedding:
+            print(f"  {meta['env_embed']}={embedding.id}")
     return 0
 
 

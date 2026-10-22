@@ -19,7 +19,8 @@ SchemaT = TypeVar("SchemaT", bound=BaseModel)
 # Model families we care about, in provider-neutral terms.
 FAMILY_CHEAP = "cheap"  # per-chunk extraction: the fastest, cheapest tier
 FAMILY_STRONG = "strong"  # final answer synthesis
-FAMILIES = (FAMILY_CHEAP, FAMILY_STRONG)
+FAMILY_EMBED = "embed"  # text -> vector, for retrieval (D16)
+FAMILIES = (FAMILY_CHEAP, FAMILY_STRONG, FAMILY_EMBED)
 
 # A trailing release date (`-20250929`) is NOT a version component. Left in, it
 # parses as a huge minor version and an older model outranks a newer one:
