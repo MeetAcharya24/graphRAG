@@ -59,6 +59,9 @@ class Entity(_Frozen):
     aliases: tuple[str, ...] = ()
     description: str = ""
     mention_chunk_ids: tuple[str, ...] = ()
+    merged_from: tuple[str, ...] = Field(
+        default=(), description="entity_ids of duplicates folded into this one (Phase 5)."
+    )
 
 
 class Relation(_Frozen):

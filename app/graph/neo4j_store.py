@@ -34,6 +34,7 @@ def _entity_from_node(node) -> Entity:
         aliases=tuple(node.get("aliases") or ()),
         description=node.get("description") or "",
         mention_chunk_ids=tuple(node.get("mention_chunk_ids") or ()),
+        merged_from=tuple(node.get("merged_from") or ()),
     )
 
 
@@ -80,6 +81,7 @@ class Neo4jGraphStore:
             aliases_normalized=[normalize_name(a) for a in entity.aliases],
             description=entity.description,
             mention_chunk_ids=list(entity.mention_chunk_ids),
+            merged_from=list(entity.merged_from),
         )
         return _entity_from_node(records[0]["e"])
 

@@ -129,6 +129,18 @@ def test_upserting_merges_mention_chunks_without_duplicates(store) -> None:
     assert len(found.mention_chunk_ids) == 2
 
 
+def test_upserting_merges_merged_from_without_duplicates(store) -> None:
+    """Phase 5 records folded-in duplicates here; re-upserting must not lose them."""
+    store.upsert_entity(_entity(CHEN, "Sarah Chen", "PERSON", merged_from=("PERSON:s chen",)))
+    store.upsert_entity(
+        _entity(CHEN, "Sarah Chen", "PERSON", merged_from=("PERSON:dr sarah chen",))
+    )
+
+    found = store.get_entity(CHEN)
+
+    assert set(found.merged_from) == {"PERSON:s chen", "PERSON:dr sarah chen"}
+
+
 def test_a_description_is_filled_in_when_it_was_missing(store) -> None:
     store.upsert_entity(_entity(CHEN, "Sarah Chen", "PERSON"))
     store.upsert_entity(
