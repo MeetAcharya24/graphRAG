@@ -15,7 +15,6 @@ from app.config import (
     PROJECT_ROOT,
     PROVIDER_GEMINI,
     SESSION_COOKIE_NAME,
-    VECTOR_TOP_K,
     get_settings,
 )
 from app.errors import AppError, ok
@@ -407,32 +406,30 @@ class AskRequest(BaseModel):
 
 @app.post("/api/ask")
 def ask(body: AskRequest) -> dict:
-    """Answer a question from the uploaded documents.
+    """Answer a question from the hybrid evidence bundle (Phase 7).
 
     Deliberately `def`, not `async def`: embedding the question and calling the
     answer model are blocking HTTP, and `with_retry` sleeps between attempts.
     On the event loop that would stall every other request for up to minutes.
     FastAPI runs a sync handler in its threadpool, which is what we want.
 
-    Phase 2 is vector-only: nearest chunks by embedding similarity. Graph
-    traversal joins the evidence in Phase 6, which is what makes multi-hop
-    questions answerable.
+    `hybrid_retrieve` unions vector search with graph traversal (Phase 6); an
+    empty bundle costs no LLM call, and every citation the model returns is
+    verified against the bundle before it can reach the response.
     """
-    store = get_vector_store()
-    if store.count() == 0:
-        return ok(
-            {
-                "answer": "No documents have been uploaded yet.",
-                "sources": [],
-                "insufficient_evidence": True,
-            }
-        )
+    bundle = hybrid_retrieve(
+        body.question,
+        store=get_graph_store(),
+        vector_store=get_vector_store(),
+        embedder=get_embedder(),
+    )
 
-    question_vector = get_embedder().embed_query(body.question)
-    evidence = store.query(question_vector, k=VECTOR_TOP_K)
-
-    log.info("Question answered from %d chunk(s)", len(evidence))
-    return ok(answer_question(body.question, evidence, get_provider()))
+    log.info(
+        "Question answered from %d chunk(s), %d path(s)",
+        len(bundle.chunks),
+        len(bundle.paths),
+    )
+    return ok(answer_question(body.question, bundle, get_provider()))
 
 
 class RetrieveRequest(BaseModel):
