@@ -349,6 +349,90 @@ def test_orphan_cleanup_on_an_empty_store_removes_nothing(store) -> None:
     assert store.delete_orphaned_entities() == 0
 
 
+# --- dedup support primitives (Phase 5) ------------------------------------
+#
+# `merge_entity_into` (app/graph/dedup.py) is built entirely out of these, so
+# the resolver works the same way against either store without its own Cypher.
+
+
+def test_relations_of_returns_every_relationship_touching_the_entity(populated) -> None:
+    rel_ids = {r.rel_id for r in populated.relations_of(HELIOS)}
+
+    assert rel_ids == {"r1", "r2", "r4"}
+
+
+def test_relations_of_an_unconnected_entity_is_empty(populated) -> None:
+    assert populated.relations_of(UNCONNECTED) == []
+
+
+def test_relations_of_an_unknown_entity_is_empty_not_an_error(populated) -> None:
+    assert populated.relations_of("PERSON:ghost") == []
+
+
+def test_deleting_an_entity_removes_it(populated) -> None:
+    assert populated.delete_entity(HELIOS) is True
+    assert populated.get_entity(HELIOS) is None
+
+
+def test_deleting_an_entity_removes_its_relationships_too(populated) -> None:
+    """Otherwise the duplicate's edges would outlive it after a merge."""
+    populated.delete_entity(HELIOS)
+
+    assert populated.get_relation("r1") is None
+    assert populated.get_relation("r2") is None
+    assert populated.get_relation("r4") is None
+    assert populated.get_relation("r3") is not None, "unrelated edge must survive"
+
+
+def test_deleting_an_unknown_entity_is_a_no_op(store) -> None:
+    assert store.delete_entity("PERSON:ghost") is False
+
+
+# --- closing the orphaned-mention gap (Phase 5) ----------------------------
+#
+# Deleting a document's chunks must not leave stale mention_chunk_ids behind -
+# otherwise `delete_orphaned_entities` can never see the entity as orphaned.
+
+
+def test_remove_mentions_prunes_the_given_chunk_ids(store) -> None:
+    store.upsert_entity(
+        _entity(CHEN, "Sarah Chen", "PERSON", mention_chunk_ids=("doc1:0", "doc2:3"))
+    )
+
+    touched = store.remove_mentions(["doc1:0"])
+
+    assert touched == 1
+    assert store.get_entity(CHEN).mention_chunk_ids == ("doc2:3",)
+
+
+def test_remove_mentions_leaves_untouched_entities_alone(store) -> None:
+    store.upsert_entity(_entity(CHEN, "Sarah Chen", "PERSON", mention_chunk_ids=("doc2:3",)))
+
+    touched = store.remove_mentions(["doc1:0"])
+
+    assert touched == 0
+    assert store.get_entity(CHEN).mention_chunk_ids == ("doc2:3",)
+
+
+def test_remove_mentions_with_no_chunk_ids_is_a_no_op(store) -> None:
+    store.upsert_entity(_entity(CHEN, "Sarah Chen", "PERSON", mention_chunk_ids=("doc1:0",)))
+
+    assert store.remove_mentions([]) == 0
+    assert store.get_entity(CHEN).mention_chunk_ids == ("doc1:0",)
+
+
+def test_the_orphan_gap_is_closed_by_remove_mentions_then_cleanup(store) -> None:
+    """The regression PLAN.md flagged: deleting a document left orphans
+    unreachable because their stale mention_chunk_ids made them look alive."""
+    store.upsert_entity(_entity(CHEN, "Sarah Chen", "PERSON", mention_chunk_ids=("doc1:0",)))
+
+    store.remove_mentions(["doc1:0"])
+    removed = store.delete_orphaned_entities()
+
+    assert removed == 1
+    assert store.get_entity(CHEN) is None
+
+
 # --- re-upserting a corrected relationship -------------------------------
 
 
