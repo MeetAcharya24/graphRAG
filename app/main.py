@@ -74,10 +74,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
     if settings.neo4j_configured:
-        from app.db.driver import close_driver, get_driver
+        from app.db.driver import shutdown_driver
 
-        close_driver(get_driver())
-        log.info("Neo4j driver closed")
+        # A bad URI means get_driver() raises and lru_cache stored nothing, so
+        # the shutdown path must not assume a driver exists.
+        shutdown_driver()
 
 
 def _connect_database(settings) -> None:
@@ -158,8 +159,15 @@ async def unexpected_error_handler(_request: Request, exc: Exception) -> JSONRes
 
 
 @app.get("/api/health")
-async def health() -> dict:
-    """Liveness plus a snapshot of what is configured."""
+def health() -> dict:
+    """Liveness plus a snapshot of what is configured.
+
+    Deliberately `def`, not `async def`. `_storage_health` makes a blocking
+    driver call with a 15 s connection timeout, and on a single worker that
+    would freeze every other request - including the health check Render uses
+    to decide the instance is alive. The commit before this one fixed exactly
+    that for /api/ask; adding a database call here reintroduced it.
+    """
     settings = get_settings()
     # Reachable only after lifespan validated the key, so this is always
     # True in a served app; computed rather than hardcoded so it stays honest
@@ -196,8 +204,20 @@ def _storage_health(settings) -> dict:
     from app.db.driver import get_driver, verify
 
     _uri, _user, _password, database = settings.require_neo4j()
+
+    # Every database call is inside the guard. A failure after verify() - a
+    # query timing out, the instance pausing mid-request - must still produce
+    # a "not connected" body, because a 503 from /api/health is how a hosting
+    # platform decides to kill the instance.
     try:
         verify(get_driver(), database)
+        return {
+            "backend": "neo4j",
+            "connected": True,
+            "persistent": True,
+            "chunk_count": get_vector_store().count(),
+            "graph": get_graph_store().stats(),
+        }
     except AppError as exc:
         return {
             "backend": "neo4j",
@@ -205,15 +225,14 @@ def _storage_health(settings) -> dict:
             "persistent": True,
             "error": exc.message,
         }
-
-    store = get_vector_store()
-    return {
-        "backend": "neo4j",
-        "connected": True,
-        "persistent": True,
-        "chunk_count": store.count(),
-        "graph": get_graph_store().stats(),
-    }
+    except Exception as exc:  # noqa: BLE001 - health must never raise
+        log.exception("Unexpected failure checking storage health")
+        return {
+            "backend": "neo4j",
+            "connected": False,
+            "persistent": True,
+            "error": str(exc),
+        }
 
 
 class LoginRequest(BaseModel):

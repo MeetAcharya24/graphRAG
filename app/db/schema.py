@@ -46,12 +46,24 @@ def apply_schema(driver: Driver, database: str, dimensions: int | None = None) -
             ),
         ) from exc
 
+    # Read the width back rather than reporting what was requested: the index
+    # is created IF NOT EXISTS, so an existing one keeps its original width and
+    # logging the requested value would be a quiet lie.
+    actual = index_vector_dimension(driver, database)
     log.info(
-        "Neo4j schema applied: %d constraints, %d indexes, vector index at %d dimensions",
+        "Neo4j schema applied: %d constraints, %d indexes, vector index at %s dimensions",
         len(cypher.CONSTRAINTS),
         len(cypher.INDEXES),
-        width,
+        actual if actual is not None else "unknown",
     )
+    if actual is not None and actual != width:
+        log.error(
+            "The vector index is %d-dimensional but EMBEDDING_DIMENSIONS is %d. "
+            "An existing index keeps its width, so new embeddings will be "
+            "rejected. Drop the index and re-ingest to change it.",
+            actual,
+            width,
+        )
 
 
 def stored_vector_dimension(driver: Driver, database: str) -> int | None:
@@ -59,7 +71,38 @@ def stored_vector_dimension(driver: Driver, database: str) -> int | None:
 
     Used at startup to catch the one change that silently breaks retrieval:
     altering EMBEDDING_DIMENSIONS after chunks were written at the old width.
+
+    Raises a typed error rather than a raw driver exception, so the non-fatal
+    startup path can actually catch it.
     """
-    with driver.session(database=database) as session:
-        record = session.run(cypher.CHUNK_DIMENSION).single()
+    try:
+        with driver.session(database=database) as session:
+            record = session.run(cypher.CHUNK_DIMENSION).single()
+    except Exception as exc:  # noqa: BLE001 - translated immediately below
+        raise DatabaseUnavailable(
+            f"Could not read the stored vector dimension: {exc}"
+        ) from exc
     return record["dimension"] if record else None
+
+
+def index_vector_dimension(driver: Driver, database: str) -> int | None:
+    """The width the vector index was CREATED with, or None if absent.
+
+    Distinct from the stored-chunk width and the reason this exists: the index
+    is created `IF NOT EXISTS`, so changing EMBEDDING_DIMENSIONS leaves an
+    index at the old width in place. With the chunks cleared, nothing else can
+    detect the mismatch, and new embeddings are silently rejected by the index.
+    """
+    try:
+        with driver.session(database=database) as session:
+            record = session.run(cypher.SHOW_VECTOR_INDEX).single()
+    except Exception as exc:  # noqa: BLE001 - translated immediately below
+        raise DatabaseUnavailable(
+            f"Could not read the vector index configuration: {exc}"
+        ) from exc
+
+    if not record:
+        return None
+    config = record.get("options") or {}
+    dimensions = (config.get("indexConfig") or {}).get("vector.dimensions")
+    return int(dimensions) if dimensions is not None else None

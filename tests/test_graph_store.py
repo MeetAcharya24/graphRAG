@@ -347,3 +347,34 @@ def test_an_entity_with_no_mentions_left_is_removable(store) -> None:
 
 def test_orphan_cleanup_on_an_empty_store_removes_nothing(store) -> None:
     assert store.delete_orphaned_entities() == 0
+
+
+# --- re-upserting a corrected relationship -------------------------------
+
+
+def test_re_upserting_a_relationship_updates_its_fields(store) -> None:
+    """A divergence the suite previously missed.
+
+    The in-memory store replaced the record; Neo4j used ON CREATE SET only, so
+    a corrected type, chunk or confidence was silently discarded. Re-ingesting
+    a document with better extraction updated the graph in tests and did
+    nothing in production.
+    """
+    store.upsert_entity(_entity(CHEN, "Sarah Chen", "PERSON"))
+    store.upsert_entity(_entity(HELIOS, "Helios Labs", "ORG"))
+
+    store.upsert_relation(
+        _relation("r1", CHEN, HELIOS, "works_at", source_chunk_id="doc1:0")
+    )
+    store.upsert_relation(
+        _relation(
+            "r1", CHEN, HELIOS, "founded", source_chunk_id="doc2:5", confidence=0.5
+        )
+    )
+
+    relation = store.get_relation("r1")
+
+    assert store.stats()["relation_count"] == 1, "must update, not duplicate"
+    assert relation.type == "founded"
+    assert relation.source_chunk_id == "doc2:5"
+    assert relation.confidence == 0.5

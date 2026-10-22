@@ -28,6 +28,13 @@ _SETTINGS_ENV_VARS = (
     "GRAPHRAG_COOKIE_SECURE",
     "GRAPHRAG_TRUST_PROXY",
     "GEMINI_EMBEDDING_MODEL",
+    # Without these the suite would run against a real AuraDB whenever a
+    # developer or CI has them exported: `neo4j_configured` turns true, the
+    # client fixture's lifespan applies the schema, and health tests query it.
+    "NEO4J_URI",
+    "NEO4J_USERNAME",
+    "NEO4J_PASSWORD",
+    "NEO4J_DATABASE",
 )
 
 
@@ -35,14 +42,17 @@ def _clear_caches() -> None:
     from app.config import get_settings
     from app.llm.factory import get_provider
     from app.security.auth import login_limiter
-    from app.vector.factory import get_embedder, get_vector_store
+    from app.db.driver import get_driver
+    from app.vector.factory import get_embedder, get_graph_store, get_vector_store
 
     get_settings.cache_clear()
     get_provider.cache_clear()
-    # Cached singletons: without clearing, the first test to touch the factory
-    # directly would hold a real Gemini client for the rest of the session.
+    # Cached singletons: without clearing, the first test to touch a factory
+    # would hold a real Gemini client or Neo4j driver for the whole session.
     get_embedder.cache_clear()
     get_vector_store.cache_clear()
+    get_graph_store.cache_clear()
+    get_driver.cache_clear()
     # Module-level state: without this, one test's failed logins would throttle
     # the next test's.
     login_limiter.clear()
@@ -95,14 +105,20 @@ def offline_services(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     store = InMemoryVectorStore()
     provider = FakeLLM()
 
+    from app.graph.memory_store import InMemoryGraphStore
+
+    graph = InMemoryGraphStore()
+
     monkeypatch.setattr("app.main.get_embedder", lambda: embedder)
     monkeypatch.setattr("app.main.get_vector_store", lambda: store)
     monkeypatch.setattr("app.main.get_provider", lambda: provider)
+    # /api/health calls this one too; unfaked, it reached the real factory.
+    monkeypatch.setattr("app.main.get_graph_store", lambda: graph)
 
     # Tests reach these through the `fakes` fixture below.
     monkeypatch.setattr(
         "app.main._test_fakes",
-        {"embedder": embedder, "store": store, "provider": provider},
+        {"embedder": embedder, "store": store, "provider": provider, "graph": graph},
         raising=False,
     )
     yield
@@ -201,6 +217,12 @@ def live_driver():
         password=values["NEO4J_PASSWORD"],
     )
     database = values["NEO4J_DATABASE"]
+
+    # Verify before touching anything: a paused instance then reports itself
+    # clearly rather than raising a raw SessionExpired out of the wipe.
+    from app.db.driver import verify
+
+    verify(driver, database)
 
     def wipe() -> None:
         with driver.session(database=database) as session:

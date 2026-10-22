@@ -140,10 +140,9 @@ class Neo4jGraphStore:
         return [_entity_from_node(record["e"]) for record in self._run(cypher.ALL_ENTITIES)]
 
     def stats(self) -> dict[str, int]:
-        record = self._run(cypher.STATS)[0]
         return {
-            "entity_count": record["entity_count"],
-            "relation_count": record["relation_count"],
+            "entity_count": self._run(cypher.COUNT_ENTITIES)[0]["entity_count"],
+            "relation_count": self._run(cypher.COUNT_RELATIONS)[0]["relation_count"],
         }
 
     # --- traversal ---
