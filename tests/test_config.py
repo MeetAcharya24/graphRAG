@@ -121,8 +121,11 @@ def test_generic_override_wins_over_provider_specific(
 def test_require_models_raises_when_not_discovered(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Undiscovered means no env var AND no stored constant."""
     monkeypatch.setenv("GEMINI_EXTRACTION_MODEL", "")
     monkeypatch.setenv("GEMINI_ANSWER_MODEL", "")
+    monkeypatch.setattr("app.config.DEFAULT_GEMINI_EXTRACTION_MODEL", "")
+    monkeypatch.setattr("app.config.DEFAULT_GEMINI_ANSWER_MODEL", "")
     get_settings.cache_clear()
 
     with pytest.raises(ConfigError) as excinfo:
@@ -140,7 +143,7 @@ def test_derived_paths_live_under_data_dir() -> None:
     settings = get_settings()
     data_dir = settings.resolved_data_dir
 
-    for path in (settings.chroma_dir, settings.uploads_dir, settings.graph_path):
+    for path in (settings.uploads_dir, settings.graph_path):
         assert data_dir in path.parents
 
 
@@ -150,8 +153,7 @@ def test_ensure_dirs_is_idempotent() -> None:
     settings.ensure_dirs()
     settings.ensure_dirs()
 
-    assert settings.chroma_dir.is_dir()
-    assert settings.uploads_dir.is_dir()
+    assert settings.resolved_data_dir.is_dir()
 
 
 def test_relative_data_dir_resolves_against_project_root(
@@ -218,3 +220,62 @@ def test_log_level_is_normalised(monkeypatch: pytest.MonkeyPatch) -> None:
     get_settings.cache_clear()
 
     assert get_settings().log_level == "DEBUG"
+
+
+# --- a blank env var must not shadow a discovered model id ---------------
+
+
+def test_a_blank_env_var_falls_back_to_the_discovered_constant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The trap .env.example set: every model var ships blank.
+
+    Copying the template and running discovery left the app broken, because
+    the empty variable overrode the id discovery had just written.
+    """
+    monkeypatch.setenv("GEMINI_ANSWER_MODEL", "")
+    monkeypatch.setenv("GEMINI_EXTRACTION_MODEL", "")
+    monkeypatch.setenv("GEMINI_EMBEDDING_MODEL", "")
+    monkeypatch.setattr("app.config.DEFAULT_GEMINI_ANSWER_MODEL", "stored-answer")
+    monkeypatch.setattr("app.config.DEFAULT_GEMINI_EXTRACTION_MODEL", "stored-extract")
+    monkeypatch.setattr("app.config.DEFAULT_EMBEDDING_MODEL", "stored-embed")
+    get_settings.cache_clear()
+
+    settings = get_settings()
+
+    assert settings.answer_model == "stored-answer"
+    assert settings.extraction_model == "stored-extract"
+    assert settings.resolved_embedding_model == "stored-embed"
+
+
+def test_a_whitespace_only_env_var_also_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GEMINI_ANSWER_MODEL", "   ")
+    monkeypatch.setattr("app.config.DEFAULT_GEMINI_ANSWER_MODEL", "stored-answer")
+    get_settings.cache_clear()
+
+    assert get_settings().answer_model == "stored-answer"
+
+
+def test_a_set_env_var_still_wins_over_the_constant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GEMINI_ANSWER_MODEL", "from-env")
+    monkeypatch.setattr("app.config.DEFAULT_GEMINI_ANSWER_MODEL", "stored-answer")
+    get_settings.cache_clear()
+
+    assert get_settings().answer_model == "from-env"
+
+
+def test_require_embedding_model_rejects_whitespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GEMINI_EMBEDDING_MODEL", "   ")
+    monkeypatch.setattr("app.config.DEFAULT_EMBEDDING_MODEL", "")
+    get_settings.cache_clear()
+
+    with pytest.raises(ConfigError) as excinfo:
+        get_settings().require_embedding_model()
+
+    assert excinfo.value.hint and "app.llm.models" in excinfo.value.hint

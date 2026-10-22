@@ -65,7 +65,11 @@ def resolve_citations(
     seen: set[str] = set()
 
     for number in used_sources:
-        if not isinstance(number, int) or not 1 <= number <= len(evidence):
+        # `bool` subclasses `int`, so True would otherwise read as source 1.
+        if isinstance(number, bool) or not isinstance(number, int):
+            log.warning("Dropped a non-integer citation: %r", number)
+            continue
+        if not 1 <= number <= len(evidence):
             log.warning("Dropped an out-of-range citation: %r", number)
             continue
         chunk = evidence[number - 1].chunk

@@ -20,7 +20,11 @@ def get_embedder() -> Embedder:
     from app.vector.embedder import build_embedder
 
     embedder = build_embedder()
-    log.info("Embedder: %s (dimension %d)", embedder.model, embedder.dimension)
+    log.info(
+        "Embedder: %s (dimension %d)",
+        getattr(embedder, "model", type(embedder).__name__),
+        embedder.dimension,
+    )
     return embedder
 
 

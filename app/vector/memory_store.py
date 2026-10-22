@@ -75,8 +75,10 @@ class InMemoryVectorStore:
             ScoredChunk(chunk=self._chunks[chunk_id], score=cosine_similarity(vector, stored))
             for chunk_id, stored in self._vectors.items()
         ]
-        # chunk_id breaks score ties, so ordering is deterministic.
-        scored.sort(key=lambda item: (item.score, item.chunk.chunk_id), reverse=True)
+        # Highest score first, ties broken by ascending chunk_id so equal
+        # scores keep document order. A single reverse=True would sort the
+        # tie-breaker backwards too, putting d:9 ahead of d:0.
+        scored.sort(key=lambda item: (-item.score, item.chunk.chunk_id))
         return scored[:k]
 
     def get_by_ids(self, chunk_ids: Sequence[str]) -> list[Chunk]:

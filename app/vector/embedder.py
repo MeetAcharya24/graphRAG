@@ -149,6 +149,6 @@ def build_embedder() -> GeminiEmbedder:
             api_key=settings.require_api_key(),
             http_options=types.HttpOptions(timeout=int(LLM_TIMEOUT_SECONDS * 1000)),
         ),
-        model=settings.embedding_model,
+        model=settings.require_embedding_model(),
         dimension=EMBEDDING_DIMENSIONS,
     )
