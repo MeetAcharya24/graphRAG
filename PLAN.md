@@ -6,71 +6,56 @@
 
 ## Where we stopped — 2026-10-22
 
-**State:** **385 tests passing offline** (up from 370). Phases 0–6 complete; Phase 9 (password
-gate) brought forward and mostly complete. Working tree clean.
+**State:** **384 tests passing offline**. Phases 0–7 complete; Phase 9 (password gate) brought
+forward and mostly complete. Working tree clean.
 
-**Phase 6 complete: hybrid retrieval & multi-hop traversal.** `app/graph/retrieval.py` —
-`seed_entities` (vector-hit mentions ∪ fuzzy name/alias matches against same-length question
-windows, to avoid short-name false positives from naive partial-ratio matching), `expand_subgraph`
-(hop-decayed BFS built entirely out of `GraphStore.relations_of`/`get_entity`, same discipline as
-Phase 5's merge — no Cypher of its own), and `_boost_shortest_paths` (shortest walks between every
-seed pair, merged in and boosted regardless of the node/degree caps, since a path connecting two
-seeds *is* the multi-hop answer). `hybrid_retrieve` unions vector hits with the chunks behind
-surviving graph edges into an `EvidenceBundle` (new in `app/schemas.py`), ranked and truncated to a
-hard `MAX_EVIDENCE_CHUNKS` context budget. Debug route `POST /api/retrieve` added to `app/main.py`.
+**Phase 7 complete: answer synthesis with verified citations.** `app/qa/answerer.py` rewritten to
+consume the Phase 6 `EvidenceBundle` instead of a plain vector chunk list. `Answer` now carries
+`used_chunk_ids`/`used_edge_ids` (real ids, not positions) plus `confidence`; `resolve_chunk_citations`
+and `resolve_edge_citations` verify every claimed id against the bundle, dropping and logging
+anything fabricated, and `render_paths` renders a graph path only when *every* edge it needs
+survived that check — a hallucinated edge can't make up half of an otherwise-real chain. A
+fully-fabricated citation set downgrades the answer (`insufficient_evidence=True`, `confidence=0.0`)
+rather than rendering it. `POST /api/ask` now runs `hybrid_retrieve` instead of vector-only search;
+an empty bundle still answers with no LLM call. Covered in `tests/test_qa_answerer.py` (14 tests,
+unit-level against hand-built bundles) and a rewritten `tests/test_ask_api.py` (8 tests, wiring-level
+— the login gate, the no-evidence fast path, and a quota error reaching the client as a clean
+envelope, not a stack trace).
 
-All of Phase 6's listed guarantees are covered in `tests/test_retrieval.py` (13 tests) and
-`tests/test_retrieve_api.py` (3 tests): 3-hop reachability from a single seed, hop-decay ordering,
-the node budget, the hub degree cap (highest-confidence edges survive, not an arbitrary slice), zero
-seeds raising nothing, reproducibility, and — the one that took two redesigns to get right — a case
-where *both* ends of the path are degree-capped out of plain expansion and only
-`_boost_shortest_paths` recovers it. The first two versions of that test passed for the wrong
-reason: with both path endpoints as seeds, bidirectional BFS kept re-discovering the path through
-whichever side wasn't capped, so the "boost increases the score" and "one capped hub" versions were
-both no-ops in disguise. Capping the degree on hubs at *both* ends of the path was what finally
-forced a genuine dependency on the boost step.
+**Manually verified end-to-end against real Gemini** (not part of the suite): ingested the 3-hop
+scenario (Sarah Chen → Helios Labs → acquired by Northwind Systems → produces Atlas) and asked
+"Which product does Sarah Chen's work ultimately contribute to?" twice. Vector search alone (nearest
+chunk only) answered `insufficient_evidence`; graph + vector hybrid retrieval answered correctly,
+citing all three chunks and rendering the full path
+`Sarah Chen —works_at→ Helios Labs —acquired→ Northwind Systems —produces→ Atlas industrial sensor
+platform`. This is the exact proof Phase 11 is built around.
 
-**Phase 5 complete: entity deduplication (layers 1–5, D2).** `app/graph/dedup.py` — `dedup_key`
-(a stricter normal form than `normalize_name`: strips personal titles and corporate suffixes,
-keeps generational ones on purpose), `match_pair` (exact → alias rules → fuzzy via
-`rapidfuzz.token_set_ratio`), and `resolve_duplicates`, which also runs embedding cosine (layer 5)
-when given an embedder and merges via `merge_entity_into` — built entirely out of `GraphStore`
-primitives, so it behaves identically on both stores. Layer 6 (LLM tiebreak) stays deferred per
-D2; a `tiebreaker` hook is wired in and grey-band pairs are logged either way.
-
-New `GraphStore` primitives backing the merge: `relations_of`, `delete_entity`, `remove_mentions`
-— verified against both the in-memory fake and the real AuraDB (`pytest -m live` →
-**48 passed**). `Entity` gained `merged_from`, unioned additively on upsert like `aliases`.
-
-**The orphaned-entity gap is closed at the primitive level.** `remove_mentions(chunk_ids)` prunes
-stale `mention_chunk_ids` so `delete_orphaned_entities` can see an entity as orphaned once its
-only source chunks are gone — tested directly. **Not yet wired into an endpoint**: there is still
-no document-delete route in `app/main.py`, so nothing calls `delete_doc` → `remove_mentions` →
-`delete_orphaned_entities` together today. Whoever adds a delete-document endpoint must call all
-three in that order.
-
-**Two correctness bugs found and fixed while writing Phase 5's acceptance tests** (see
-`app/graph/dedup.py` docstrings for detail): a bare single-token name is a trivial token-subset of
-almost any longer name, so fuzzy matching had to be routed around it in favour of the
-unique-last-name rule's ambiguity check; and rewiring a relationship's endpoint during a merge
-while keeping its old `rel_id` left a stale copy behind (on the in-memory store, this caused
-`delete_entity` to delete the *rewired* edge) — the rewired edge now gets a fresh, deterministic
-id from its new (source, target, type, chunk) tuple.
+**Bug found via that live run, fixed same day:** the configured extraction model
+(`gemini-3.5-flash-lite`) rejects a zero thinking budget with Gemini's generic "Request contains an
+invalid argument" 400 — which never says "thinking" — so `app/llm/gemini_provider.py`'s
+`_is_thinking_rejection` (keyed on the word "thinking" in the message) never caught it, and real
+extraction was silently failing every batch. Fixed to treat *any* 400 from a thinking-budget call as
+retryable without it; a genuinely unrelated 400 still surfaces unchanged, one harmless extra request
+later. `tests/test_retry.py` now asserts this against the exact wording-free message that broke it,
+not just the old thinking-worded one.
 
 ### Still outstanding
 
 - **`.claude/settings.json`** — add `{"env": {"ECC_GATEGUARD": "off"}}` yourself if you want
   GateGuard's write-confirmation prompts turned off; the assistant cannot make this edit.
-- **No document-delete endpoint exists yet** — see above; needed before the orphan-cleanup
-  primitives added this phase do anything in production.
+- **No document-delete endpoint exists yet** (Phase 5 gap) — `delete_doc` → `remove_mentions` →
+  `delete_orphaned_entities` still isn't wired into any route in `app/main.py`.
 - `db.index.vector.queryNodes` is deprecated on Neo4j 5.27-aura in favour of `SEARCH`. Still works;
   migrating is a later task.
+- Entity dedup (`app/graph/dedup.py`, Phase 5) is still not called anywhere in the upload pipeline —
+  aliased mentions of the same person/org across documents stay as separate graph nodes until
+  something calls `resolve_duplicates` explicitly.
 
-### Next phase: Phase 7 — answer synthesis with verified citations
+### Next phase: Phase 8 — background ingestion with status polling
 
-Hand the `EvidenceBundle` to the answer model, verify every claimed citation against what was
-actually retrieved, and render paths server-side so a hallucinated source can never reach the UI.
-See the Phase 7 section above for the full spec and test list.
+`POST /api/documents` returns a job id immediately instead of blocking on embedding/extraction;
+`GET /api/jobs/{job_id}` polls `queued → running → succeeded|failed` with a stage and chunk counter.
+See the Phase 8 section above for the full spec and test list.
 
 **Revision history**
 - 2026-10-19 — approved as a localhost app on the Anthropic Claude API.
