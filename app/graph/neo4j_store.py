@@ -174,6 +174,23 @@ class Neo4jGraphStore:
             paths.append(GraphPath(nodes=tuple(nodes), edges=tuple(edges)))
         return paths
 
+    # --- dedup support (Phase 5) ---
+
+    def relations_of(self, entity_id: str) -> list[Relation]:
+        records = self._run(cypher.RELATIONS_OF_ENTITY, entity_id=entity_id)
+        return [_relation_from_mapping(record) for record in records]
+
+    def delete_entity(self, entity_id: str) -> bool:
+        records = self._run(cypher.DELETE_ENTITY, entity_id=entity_id)
+        return bool(records and records[0]["removed"])
+
+    def remove_mentions(self, chunk_ids: Sequence[str]) -> int:
+        ids = list(chunk_ids)
+        if not ids:
+            return 0
+        records = self._run(cypher.REMOVE_MENTIONS, chunk_ids=ids)
+        return records[0]["touched"] if records else 0
+
     # --- cleanup ---
 
     def delete_orphaned_entities(self) -> int:
