@@ -4,40 +4,53 @@
 
 ---
 
-## Where we stopped — 2026-10-23
+## Where we stopped — 2026-10-22
 
-**State:** **327 tests passing offline.** Phases 0, 1, 2, 3 and 4 complete; Phase 9 (password gate)
-brought forward and mostly complete. Working tree clean, `master` in sync with `origin/master`.
+**State:** **370 tests passing offline** (up from 327). Phases 0–5 complete; Phase 9 (password
+gate) brought forward and mostly complete. Working tree clean.
 
-**Deployed:** https://graphrag-bb8z.onrender.com — Render free web service, live and gated, with
-Neo4j variables now set (`/api/health` confirmed `backend: neo4j, connected: true`).
+**Phase 5 complete: entity deduplication (layers 1–5, D2).** `app/graph/dedup.py` — `dedup_key`
+(a stricter normal form than `normalize_name`: strips personal titles and corporate suffixes,
+keeps generational ones on purpose), `match_pair` (exact → alias rules → fuzzy via
+`rapidfuzz.token_set_ratio`), and `resolve_duplicates`, which also runs embedding cosine (layer 5)
+when given an embedder and merges via `merge_entity_into` — built entirely out of `GraphStore`
+primitives, so it behaves identically on both stores. Layer 6 (LLM tiebreak) stays deferred per
+D2; a `tiebreaker` hook is wired in and grey-band pairs are logged either way.
 
-**Live Neo4j suite re-run and green:** `pytest -m live` → **61 passed** against the real AuraDB,
-confirming the Phase 3 code-review fixes did not break the Neo4j path.
+New `GraphStore` primitives backing the merge: `relations_of`, `delete_entity`, `remove_mentions`
+— verified against both the in-memory fake and the real AuraDB (`pytest -m live` →
+**48 passed**). `Entity` gained `merged_from`, unioned additively on upsert like `aliases`.
 
-**Project tooling added:** `CLAUDE.md` (terse replies, scoped test runs, no speculative reads, no
-extra subagents) committed. `.claude/settings.json` with `ECC_GATEGUARD=off` was requested but
-**blocked by the auto-mode classifier as self-modification** — it refuses to let the assistant
-disable its own safety hook. Still outstanding if you want it; see below.
+**The orphaned-entity gap is closed at the primitive level.** `remove_mentions(chunk_ids)` prunes
+stale `mention_chunk_ids` so `delete_orphaned_entities` can see an entity as orphaned once its
+only source chunks are gone — tested directly. **Not yet wired into an endpoint**: there is still
+no document-delete route in `app/main.py`, so nothing calls `delete_doc` → `remove_mentions` →
+`delete_orphaned_entities` together today. Whoever adds a delete-document endpoint must call all
+three in that order.
+
+**Two correctness bugs found and fixed while writing Phase 5's acceptance tests** (see
+`app/graph/dedup.py` docstrings for detail): a bare single-token name is a trivial token-subset of
+almost any longer name, so fuzzy matching had to be routed around it in favour of the
+unique-last-name rule's ambiguity check; and rewiring a relationship's endpoint during a merge
+while keeping its old `rel_id` left a stale copy behind (on the in-memory store, this caused
+`delete_entity` to delete the *rewired* edge) — the rewired edge now gets a fresh, deterministic
+id from its new (source, target, type, chunk) tuple.
 
 ### Still outstanding
 
 - **`.claude/settings.json`** — add `{"env": {"ECC_GATEGUARD": "off"}}` yourself if you want
   GateGuard's write-confirmation prompts turned off; the assistant cannot make this edit.
-- **`delete_orphaned_entities` still cannot fire.** Deleting a document removes `:Chunk` and
-  `:Document` nodes but does not prune `mention_chunk_ids` on entities. This was harmless while
-  nothing created entities; **Phase 4 now does**, so this is a real gap, not a theoretical one —
-  re-ingesting then deleting a document now leaves orphaned entity nodes behind. Fix before or
-  during Phase 5, since dedup will otherwise merge against stale entities.
+- **No document-delete endpoint exists yet** — see above; needed before the orphan-cleanup
+  primitives added this phase do anything in production.
 - `db.index.vector.queryNodes` is deprecated on Neo4j 5.27-aura in favour of `SEARCH`. Still works;
   migrating is a later task.
 
-### Next phase: Phase 5 — entity deduplication (layers 1–5, D2)
+### Next phase: Phase 6 — hybrid retrieval & multi-hop traversal
 
-Collapse "Sarah Chen" / "S. Chen" / "Dr. Sarah Chen" into one node without merging distinct
-same-named entities. Layers: normalize → exact → alias rules → fuzzy (rapidfuzz) → embedding
-cosine. Layer 6 (LLM tiebreak) stays deferred per D2. Close the orphaned-entity gap above as part
-of this phase, since dedup needs `mention_chunk_ids` to be trustworthy.
+Embed the question, seed from vector search + name/alias matches, expand 1–3 hops with hop-decay
+scoring and a hub-degree cap, boost shortest paths between seed pairs, union the resulting chunks
+into an `EvidenceBundle`. Debug route `POST /api/retrieve`. See the Phase 6 section below for the
+full spec and test list.
 
 **Revision history**
 - 2026-10-19 — approved as a localhost app on the Anthropic Claude API.
