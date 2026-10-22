@@ -27,6 +27,18 @@ def _ask(client, question: str):
     return client.post("/api/ask", json={"question": question})
 
 
+def _answer_call(fakes) -> dict:
+    """The last provider call, which is the answer.
+
+    Uploading triggers extraction (Phase 4), so the provider records a call per
+    batch before the question is ever asked. Indexing from the front would pick
+    up an extraction prompt.
+    """
+    calls = fakes["provider"].calls
+    assert calls, "the provider was never called"
+    return calls[-1]
+
+
 def _scored(texts: list[str]) -> list[ScoredChunk]:
     return [
         ScoredChunk(
@@ -81,7 +93,7 @@ def test_the_answer_model_is_the_discovered_one(auth_client, fakes) -> None:
 
     _ask(auth_client, "Who acquired Helios Labs?")
 
-    assert fakes["provider"].calls[0]["model"] == "test-flash-model"
+    assert _answer_call(fakes)["model"] == "test-flash-model"
 
 
 def test_the_prompt_carries_the_retrieved_text(auth_client, fakes) -> None:
@@ -90,7 +102,7 @@ def test_the_prompt_carries_the_retrieved_text(auth_client, fakes) -> None:
 
     _ask(auth_client, "Who acquired Helios Labs?")
 
-    prompt = fakes["provider"].calls[0]["prompt"]
+    prompt = _answer_call(fakes)["prompt"]
     assert "Northwind Systems" in prompt
     assert "Who acquired Helios Labs?" in prompt
 
@@ -101,7 +113,7 @@ def test_the_system_prompt_forbids_outside_knowledge(auth_client, fakes) -> None
 
     _ask(auth_client, "Who acquired Helios Labs?")
 
-    system = fakes["provider"].calls[0]["system"].lower()
+    system = _answer_call(fakes)["system"].lower()
     assert "only" in system
     assert "insufficient_evidence" in system
 
@@ -207,7 +219,7 @@ def test_the_most_relevant_document_is_cited(auth_client, fakes) -> None:
 
     _ask(auth_client, "Northwind Systems acquisition of Helios Labs")
 
-    prompt = fakes["provider"].calls[0]["prompt"]
+    prompt = _answer_call(fakes)["prompt"]
     first_source = prompt.split("[1] ", 1)[1].split("\n", 1)[0]
     assert "Northwind" in first_source, f"top source was: {first_source!r}"
 

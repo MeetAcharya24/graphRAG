@@ -54,10 +54,16 @@ class FakeLLM:
         )
 
         if not self._responses:
-            raise AssertionError(
-                f"FakeLLM had no queued response for a {schema.__name__} call. "
-                "Queue one with FakeLLM(responses=[...]) or .queue(...)."
-            )
+            try:
+                # An all-defaults schema (ExtractionResult) becomes an empty
+                # result. Uploading triggers extraction, and a test about
+                # answering should not have to queue a response for it.
+                return schema()
+            except Exception:  # noqa: BLE001 - a required field means no default
+                raise AssertionError(
+                    f"FakeLLM had no queued response for a {schema.__name__} call. "
+                    "Queue one with FakeLLM(responses=[...]) or .queue(...)."
+                ) from None
 
         response = self._responses.pop(0)
         if isinstance(response, Exception):

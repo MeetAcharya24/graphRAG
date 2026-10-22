@@ -82,6 +82,12 @@ LLM_TIMEOUT_SECONDS = 120.0
 # has a low requests-per-minute ceiling, and going wider just trips 429s.
 EXTRACTION_CONCURRENCY = 2
 
+# Chunks per extraction call (D14). At 5, a 200-chunk document costs ~40
+# calls instead of 200. Lower it to 1 if per-chunk attribution ever proves
+# unreliable - the whole batching gain rests on the model naming the right
+# chunk for each triple.
+EXTRACTION_BATCH_SIZE = 5
+
 # Thinking budget for per-chunk extraction. 0 disables internal reasoning,
 # which is both faster and cheaper on a quota measured in requests.
 EXTRACTION_THINKING_BUDGET = 0
