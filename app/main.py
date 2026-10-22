@@ -26,7 +26,7 @@ from app.llm.factory import get_provider
 from app.qa.answerer import answer_question
 from app.schemas import DocumentSummary
 from app.security import auth
-from app.vector.factory import get_embedder, get_vector_store
+from app.vector.factory import get_embedder, get_graph_store, get_vector_store
 
 log = get_logger(__name__)
 STATIC_DIR = PROJECT_ROOT / "app" / "static"
@@ -68,8 +68,55 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # runs discovery. Anything needing the LLM will raise the same error.
         log.warning("%s %s", exc.message, exc.hint or "")
 
+    _connect_database(settings)
+
     log.info("Data directory: %s", settings.resolved_data_dir)
     yield
+
+    if settings.neo4j_configured:
+        from app.db.driver import close_driver, get_driver
+
+        close_driver(get_driver())
+        log.info("Neo4j driver closed")
+
+
+def _connect_database(settings) -> None:
+    """Verify the database and apply the schema, at boot.
+
+    Not fatal: an app that still serves /api/health and a clear error beats one
+    that will not start because a free database paused overnight. The failure
+    is logged and surfaced by /api/health rather than hidden.
+    """
+    if not settings.neo4j_configured:
+        log.warning(
+            "Neo4j is NOT configured - storage is in-memory and uploads are "
+            "lost on restart. Set NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD."
+        )
+        return
+
+    from app.config import EMBEDDING_DIMENSIONS
+    from app.db.driver import get_driver, verify
+    from app.db.schema import apply_schema, stored_vector_dimension
+
+    _uri, _user, _password, database = settings.require_neo4j()
+    try:
+        driver = get_driver()
+        verify(driver, database)
+        apply_schema(driver, database=database)
+
+        stored = stored_vector_dimension(driver, database)
+        if stored is not None and stored != EMBEDDING_DIMENSIONS:
+            # Silent otherwise, and fatal to retrieval: old vectors would be
+            # incomparable with new ones.
+            log.error(
+                "Stored vectors are %d-dimensional but EMBEDDING_DIMENSIONS is %d. "
+                "Re-ingest the documents, or restore the previous dimension.",
+                stored,
+                EMBEDDING_DIMENSIONS,
+            )
+        log.info("Neo4j ready (database %s)", database)
+    except AppError as exc:
+        log.error("Neo4j unavailable: %s %s", exc.message, exc.hint or "")
 
 
 app = FastAPI(
@@ -132,8 +179,41 @@ async def health() -> dict:
             "extraction_model": settings.extraction_model or None,
             "answer_model": settings.answer_model or None,
             "models_configured": bool(settings.extraction_model and settings.answer_model),
+            "storage": _storage_health(settings),
         }
     )
+
+
+def _storage_health(settings) -> dict:
+    """What the storage layer is and whether it is actually reachable.
+
+    One request that answers "is this deployment wired up", which is what the
+    Phase 12 deploy check needs.
+    """
+    if not settings.neo4j_configured:
+        return {"backend": "memory", "connected": False, "persistent": False}
+
+    from app.db.driver import get_driver, verify
+
+    _uri, _user, _password, database = settings.require_neo4j()
+    try:
+        verify(get_driver(), database)
+    except AppError as exc:
+        return {
+            "backend": "neo4j",
+            "connected": False,
+            "persistent": True,
+            "error": exc.message,
+        }
+
+    store = get_vector_store()
+    return {
+        "backend": "neo4j",
+        "connected": True,
+        "persistent": True,
+        "chunk_count": store.count(),
+        "graph": get_graph_store().stats(),
+    }
 
 
 class LoginRequest(BaseModel):

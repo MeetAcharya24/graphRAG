@@ -91,6 +91,12 @@ RETRY_MAX_ATTEMPTS = 5
 RETRY_BASE_DELAY_SECONDS = 2.0
 RETRY_MAX_DELAY_SECONDS = 60.0
 
+# --- Neo4j (Phase 3, D9) ---------------------------------------------------
+# Seconds to wait for the initial connection. A free AuraDB instance that has
+# paused needs a moment to wake, but a hang at startup is worse than a clear
+# failure, so this stays short.
+NEO4J_CONNECTION_TIMEOUT_SECONDS = 15.0
+
 # --- Access control (D11) --------------------------------------------------
 SESSION_COOKIE_NAME = "graphrag_session"
 SESSION_TOKEN_PAYLOAD = "authenticated"
@@ -153,6 +159,13 @@ class Settings(BaseSettings):
     session_secret: str = Field(default="", alias="SESSION_SECRET")
     cookie_secure: bool = Field(default=SESSION_COOKIE_SECURE, alias="GRAPHRAG_COOKIE_SECURE")
     trust_proxy_headers: bool = Field(default=False, alias="GRAPHRAG_TRUST_PROXY")
+
+    neo4j_uri: str = Field(default="", alias="NEO4J_URI")
+    neo4j_username: str = Field(default="", alias="NEO4J_USERNAME")
+    neo4j_password: str = Field(default="", alias="NEO4J_PASSWORD")
+    # AuraDB names the database after the instance on some plans, so this is
+    # configurable rather than assumed to be "neo4j".
+    neo4j_database: str = Field(default="neo4j", alias="NEO4J_DATABASE")
 
     data_dir: Path = Field(default=Path("data"), alias="GRAPHRAG_DATA_DIR")
     log_level: str = Field(default="INFO", alias="GRAPHRAG_LOG_LEVEL")
@@ -320,6 +333,42 @@ class Settings(BaseSettings):
                 ),
             )
         return password
+
+    @property
+    def neo4j_configured(self) -> bool:
+        """Whether a graph database is configured at all."""
+        return bool(
+            self.neo4j_uri.strip()
+            and self.neo4j_username.strip()
+            and self.neo4j_password.strip()
+        )
+
+    def require_neo4j(self) -> tuple[str, str, str, str]:
+        """Return (uri, username, password, database) or explain what is missing."""
+        missing = [
+            name
+            for name, value in (
+                ("NEO4J_URI", self.neo4j_uri),
+                ("NEO4J_USERNAME", self.neo4j_username),
+                ("NEO4J_PASSWORD", self.neo4j_password),
+            )
+            if not value.strip()
+        ]
+        if missing:
+            raise ConfigError(
+                f"Neo4j is not configured: {', '.join(missing)} missing.",
+                hint=(
+                    "Create a free AuraDB instance at https://console.neo4j.io "
+                    "and copy its credentials. Note AuraDB shows them with a "
+                    "colon; .env needs NAME=value."
+                ),
+            )
+        return (
+            self.neo4j_uri.strip(),
+            self.neo4j_username.strip(),
+            self.neo4j_password.strip(),
+            self.neo4j_database.strip() or "neo4j",
+        )
 
     def require_embedding_model(self) -> str:
         """Return the embedding model id, or explain how to discover one."""

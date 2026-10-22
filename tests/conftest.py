@@ -154,3 +154,104 @@ def anthropic_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ANTHROPIC_EXTRACTION_MODEL", "test-haiku-model")
     monkeypatch.setenv("ANTHROPIC_ANSWER_MODEL", "test-sonnet-model")
     _clear_caches()
+
+
+# --- store conformance fixtures (D9) --------------------------------------
+#
+# One fixture, two implementations. The in-memory run is the default; the
+# Neo4j run is marked `live` and only happens with `-m live`, because it needs
+# real credentials and a reachable database.
+
+
+def _live_neo4j_settings() -> dict:
+    """Read the real .env on purpose.
+
+    `isolated_settings` deliberately hides .env from the test suite. A live
+    test is the one case that must see it, so it reads the file directly
+    rather than being granted a general exemption.
+    """
+    from dotenv import dotenv_values
+
+    from app.config import PROJECT_ROOT
+
+    values = dotenv_values(PROJECT_ROOT / ".env")
+    missing = [
+        key
+        for key in ("NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD", "NEO4J_DATABASE")
+        if not values.get(key)
+    ]
+    if missing:
+        pytest.skip(f"live Neo4j test needs {', '.join(missing)} in .env")
+    return values
+
+
+@pytest.fixture
+def live_driver():
+    """A real Neo4j driver, with this app's labels cleared before the test.
+
+    Scoped to the three labels this app owns, so it cannot touch anything else
+    that happens to share the database.
+    """
+    from app.db.driver import close_driver, make_driver
+
+    values = _live_neo4j_settings()
+    driver = make_driver(
+        uri=values["NEO4J_URI"],
+        username=values["NEO4J_USERNAME"],
+        password=values["NEO4J_PASSWORD"],
+    )
+    database = values["NEO4J_DATABASE"]
+
+    def wipe() -> None:
+        with driver.session(database=database) as session:
+            for label in ("Chunk", "Document", "Entity"):
+                session.run(f"MATCH (n:{label}) DETACH DELETE n")
+
+    wipe()
+    try:
+        yield driver, database
+    finally:
+        wipe()
+        close_driver(driver)
+
+
+@pytest.fixture(
+    params=[
+        pytest.param("memory", id="InMemoryGraphStore"),
+        pytest.param("neo4j", id="Neo4jGraphStore", marks=pytest.mark.live),
+    ]
+)
+def store(request):
+    """The graph store under test - in-memory by default, Neo4j with -m live."""
+    if request.param == "memory":
+        from app.graph.memory_store import InMemoryGraphStore
+
+        return InMemoryGraphStore()
+
+    from app.db.schema import apply_schema
+    from app.graph.neo4j_store import Neo4jGraphStore
+
+    driver, database = request.getfixturevalue("live_driver")
+    apply_schema(driver, database=database)
+    return Neo4jGraphStore(driver=driver, database=database)
+
+
+@pytest.fixture(
+    params=[
+        pytest.param("memory", id="InMemoryVectorStore"),
+        pytest.param("neo4j", id="Neo4jVectorStore", marks=pytest.mark.live),
+    ]
+)
+def vector_store(request):
+    """The vector store under test - in-memory by default, Neo4j with -m live."""
+    if request.param == "memory":
+        from app.vector.memory_store import InMemoryVectorStore
+
+        return InMemoryVectorStore()
+
+    from app.db.schema import apply_schema
+    from app.vector.neo4j_vectors import Neo4jVectorStore
+
+    driver, database = request.getfixturevalue("live_driver")
+    apply_schema(driver, database=database)
+    return Neo4jVectorStore(driver=driver, database=database)

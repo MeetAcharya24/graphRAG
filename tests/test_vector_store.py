@@ -14,14 +14,15 @@ import pytest
 
 from app.schemas import Chunk
 from app.vector.fake import FakeEmbedder
-from app.vector.memory_store import InMemoryVectorStore, cosine_similarity
+from app.vector.memory_store import cosine_similarity
 
-STORES = [InMemoryVectorStore]
+@pytest.fixture
+def store(vector_store):
+    """Alias onto the shared conformance fixture in conftest.
 
-
-@pytest.fixture(params=STORES, ids=lambda cls: cls.__name__)
-def store(request):
-    return request.param()
+    Parameterized there over the in-memory store and, with -m live, Neo4j.
+    """
+    return vector_store
 
 
 @pytest.fixture
