@@ -95,6 +95,28 @@ DETACH DELETE e
 RETURN count(e) AS removed
 """
 
+# --- dedup support (Phase 5) -----------------------------------------------
+
+RELATIONS_OF_ENTITY = """
+MATCH (e:Entity {entity_id: $entity_id})-[r:RELATES]-(:Entity)
+RETURN DISTINCT r.rel_id AS rel_id, r.type AS type,
+       r.source_chunk_id AS source_chunk_id, r.confidence AS confidence,
+       startNode(r).entity_id AS source_id, endNode(r).entity_id AS target_id
+"""
+
+DELETE_ENTITY = """
+MATCH (e:Entity {entity_id: $entity_id})
+DETACH DELETE e
+RETURN count(e) AS removed
+"""
+
+REMOVE_MENTIONS = """
+MATCH (e:Entity)
+WHERE any(m IN e.mention_chunk_ids WHERE m IN $chunk_ids)
+SET e.mention_chunk_ids = [m IN e.mention_chunk_ids WHERE NOT m IN $chunk_ids]
+RETURN count(e) AS touched
+"""
+
 # --- relationships --------------------------------------------------------
 
 UPSERT_RELATION = """

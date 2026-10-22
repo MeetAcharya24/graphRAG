@@ -182,6 +182,37 @@ class InMemoryGraphStore:
 
         return GraphPath(nodes=tuple(nodes), edges=tuple(edges))
 
+    # --- dedup support (Phase 5) ---
+
+    def relations_of(self, entity_id: str) -> list[Relation]:
+        rel_ids = {rel_id for _neighbour, rel_id in self._adjacency.get(entity_id, ())}
+        return [self._relations[rel_id] for rel_id in rel_ids]
+
+    def delete_entity(self, entity_id: str) -> bool:
+        if entity_id not in self._entities:
+            return False
+        for neighbour, rel_id in self._adjacency.pop(entity_id, set()):
+            self._relations.pop(rel_id, None)
+            self._adjacency.get(neighbour, set()).discard((entity_id, rel_id))
+        del self._entities[entity_id]
+        return True
+
+    def remove_mentions(self, chunk_ids: Sequence[str]) -> int:
+        doomed = set(chunk_ids)
+        if not doomed:
+            return 0
+
+        touched = 0
+        for entity_id, entity in list(self._entities.items()):
+            if not doomed.intersection(entity.mention_chunk_ids):
+                continue
+            remaining = tuple(m for m in entity.mention_chunk_ids if m not in doomed)
+            self._entities[entity_id] = entity.model_copy(
+                update={"mention_chunk_ids": remaining}
+            )
+            touched += 1
+        return touched
+
     # --- cleanup ---
 
     def delete_orphaned_entities(self) -> int:

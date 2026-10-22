@@ -75,6 +75,33 @@ class GraphStore(Protocol):
     def all_entities(self) -> list[Entity]:
         ...
 
+    def relations_of(self, entity_id: str) -> list[Relation]:
+        """Every relationship touching `entity_id`, either direction.
+
+        Phase 5's `merge_entity_into` rewires these onto the surviving entity
+        before the duplicate is deleted.
+        """
+        ...
+
+    def delete_entity(self, entity_id: str) -> bool:
+        """Remove an entity and every relationship touching it.
+
+        Unlike `delete_orphaned_entities`, this does not check mentions - it is
+        how a dedup merge disposes of the duplicate once its data has been
+        folded into the canonical entity. Returns whether it existed.
+        """
+        ...
+
+    def remove_mentions(self, chunk_ids: Sequence[str]) -> int:
+        """Prune `chunk_ids` out of every entity's `mention_chunk_ids`.
+
+        Deleting a document removes its chunks but, without this, leaves
+        stale ids behind - which makes `delete_orphaned_entities` blind to an
+        entity that document was the only source of. Returns how many
+        entities were touched.
+        """
+        ...
+
     def delete_orphaned_entities(self) -> int:
         """Remove entities no longer mentioned by any chunk. Returns the count."""
         ...
