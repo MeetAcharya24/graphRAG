@@ -105,6 +105,10 @@ ON CREATE SET
     r.type = $type,
     r.source_chunk_id = $source_chunk_id,
     r.confidence = $confidence
+ON MATCH SET
+    r.type = $type,
+    r.source_chunk_id = $source_chunk_id,
+    r.confidence = $confidence
 RETURN r
 """
 
@@ -118,10 +122,15 @@ MATCH (e:Entity) WHERE e.entity_id IN $entity_ids
 RETURN collect(e.entity_id) AS found
 """
 
-STATS = """
-CALL () { MATCH (e:Entity) RETURN count(e) AS entity_count }
-CALL () { MATCH ()-[r:RELATES]->() RETURN count(r) AS relation_count }
-RETURN entity_count, relation_count
+# Two plain queries rather than one with subqueries: `CALL () { ... }` is
+# Neo4j 5.23+, and schema.py advertises 5.13+ as the requirement.
+COUNT_ENTITIES = "MATCH (e:Entity) RETURN count(e) AS entity_count"
+COUNT_RELATIONS = "MATCH ()-[r:RELATES]->() RETURN count(r) AS relation_count"
+
+SHOW_VECTOR_INDEX = f"""
+SHOW VECTOR INDEXES YIELD name, options
+WHERE name = '{CHUNK_VECTOR_INDEX}'
+RETURN options
 """
 
 # --- traversal ------------------------------------------------------------

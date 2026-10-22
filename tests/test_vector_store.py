@@ -257,3 +257,35 @@ def test_tied_scores_keep_document_order(store, embedder) -> None:
     indexes = [r.chunk.index for r in results]
 
     assert indexes == sorted(indexes), f"tied results came back as {indexes}"
+
+
+# --- divergences the conformance suite had not covered -------------------
+
+
+def test_a_non_positive_k_returns_nothing(store, embedder) -> None:
+    """In-memory sliced to []; Neo4j's queryNodes rejects k <= 0 outright."""
+    _add(store, embedder, "doc1", ["alpha", "beta"])
+
+    assert store.query(embedder.embed_query("alpha"), k=0) == []
+    assert store.query(embedder.embed_query("alpha"), k=-5) == []
+
+
+def test_get_by_ids_returns_chunks_in_the_order_asked_for(store, embedder) -> None:
+    """Citations are rendered in sequence, so order is part of the contract.
+
+    The database returns its own order, which would have been correct in tests
+    (in-memory preserved input order) and wrong in production.
+    """
+    _add(store, embedder, "doc1", ["alpha", "beta", "gamma", "delta"])
+
+    wanted = ["doc1:3", "doc1:0", "doc1:2"]
+
+    assert [c.chunk_id for c in store.get_by_ids(wanted)] == wanted
+
+
+def test_get_by_ids_keeps_order_while_skipping_unknown_ids(store, embedder) -> None:
+    _add(store, embedder, "doc1", ["alpha", "beta"])
+
+    found = store.get_by_ids(["doc1:1", "nope:9", "doc1:0"])
+
+    assert [c.chunk_id for c in found] == ["doc1:1", "doc1:0"]

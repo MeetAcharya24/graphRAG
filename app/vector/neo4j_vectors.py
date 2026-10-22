@@ -81,7 +81,8 @@ class Neo4jVectorStore:
     # --- reading ---
 
     def query(self, vector: Vector, k: int) -> list[ScoredChunk]:
-        if self.count() == 0:
+        # queryNodes rejects a non-positive k; the in-memory store returns [].
+        if k <= 0 or self.count() == 0:
             return []
 
         stored = self._stored_dimension()
@@ -110,7 +111,11 @@ class Neo4jVectorStore:
         if not ids:
             return []
         records = self._run(cypher.GET_CHUNKS_BY_IDS, chunk_ids=ids)
-        return [_chunk_from_record(record) for record in records]
+        # Returned in the order asked for, matching the in-memory store. The
+        # database yields its own order, and a caller that renders citations in
+        # sequence would otherwise be correct in tests and wrong in production.
+        by_id = {record["chunk_id"]: _chunk_from_record(record) for record in records}
+        return [by_id[cid] for cid in ids if cid in by_id]
 
     def count(self) -> int:
         return self._run(cypher.COUNT_CHUNKS)[0]["total"]
