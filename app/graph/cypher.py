@@ -63,7 +63,8 @@ ON CREATE SET
     e.aliases = $aliases,
     e.aliases_normalized = $aliases_normalized,
     e.description = $description,
-    e.mention_chunk_ids = $mention_chunk_ids
+    e.mention_chunk_ids = $mention_chunk_ids,
+    e.merged_from = $merged_from
 ON MATCH SET
     e.aliases = e.aliases + [a IN $aliases WHERE NOT a IN e.aliases],
     e.aliases_normalized =
@@ -72,6 +73,9 @@ ON MATCH SET
     e.mention_chunk_ids =
         e.mention_chunk_ids + [m IN $mention_chunk_ids
                                WHERE NOT m IN e.mention_chunk_ids],
+    e.merged_from =
+        coalesce(e.merged_from, []) + [m IN $merged_from
+                                        WHERE NOT m IN coalesce(e.merged_from, [])],
     e.description = CASE
         WHEN e.description IS NULL OR e.description = ''
         THEN $description ELSE e.description END

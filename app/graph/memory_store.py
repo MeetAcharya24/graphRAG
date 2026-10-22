@@ -29,10 +29,14 @@ def _merge_entities(stored: Entity, incoming: Entity) -> Entity:
     mentions = list(stored.mention_chunk_ids)
     mentions += [m for m in incoming.mention_chunk_ids if m not in mentions]
 
+    merged_from = list(stored.merged_from)
+    merged_from += [m for m in incoming.merged_from if m not in merged_from]
+
     return stored.model_copy(
         update={
             "aliases": tuple(aliases),
             "mention_chunk_ids": tuple(mentions),
+            "merged_from": tuple(merged_from),
             "description": stored.description or incoming.description,
             "name": stored.name or incoming.name,
         }
