@@ -138,17 +138,17 @@ class Neo4jExtractionCache:
         self._driver = driver
         self._database = database
 
-    def _run(self, query: str, **params):
-        from app.errors import DatabaseUnavailable
+    def _run(self, query: str, *, write: bool, **params):
+        from app.db import transact
 
-        try:
-            with self._driver.session(database=self._database) as session:
-                return list(session.run(query, **params))
-        except Exception as exc:  # noqa: BLE001 - translated immediately below
-            raise DatabaseUnavailable(
-                f"An extraction-cache query failed: {exc}",
-                hint="The database may have paused while idle; try again.",
-            ) from exc
+        return transact.run(
+            self._driver,
+            self._database,
+            query,
+            write=write,
+            query_kind="extraction-cache",
+            **params,
+        )
 
     def extracted_ids(self, chunk_ids: Sequence[str]) -> set[str]:
         from app.graph import cypher
@@ -156,7 +156,7 @@ class Neo4jExtractionCache:
         ids = list(chunk_ids)
         if not ids:
             return set()
-        records = self._run(cypher.EXTRACTED_CHUNK_IDS, chunk_ids=ids)
+        records = self._run(cypher.EXTRACTED_CHUNK_IDS, write=False, chunk_ids=ids)
         return set(records[0]["extracted"] or ()) if records else set()
 
     def mark_extracted(self, chunk_ids: Sequence[str]) -> None:
@@ -165,7 +165,7 @@ class Neo4jExtractionCache:
         ids = list(chunk_ids)
         if not ids:
             return
-        self._run(cypher.MARK_CHUNKS_EXTRACTED, chunk_ids=ids)
+        self._run(cypher.MARK_CHUNKS_EXTRACTED, write=True, chunk_ids=ids)
 
 
 SYSTEM_PROMPT = f"""You read text and list the entities and relationships in it.

@@ -8,8 +8,10 @@ upsert: `MERGE` on a non-unique key can create duplicates under concurrency.
 from __future__ import annotations
 
 from neo4j import Driver
+from neo4j.exceptions import ServiceUnavailable, SessionExpired, TransientError
 
 from app.config import EMBEDDING_DIMENSIONS
+from app.db import transact
 from app.errors import DatabaseUnavailable
 from app.graph import cypher
 from app.logging_conf import get_logger
@@ -33,12 +35,16 @@ def apply_schema(driver: Driver, database: str, dimensions: int | None = None) -
     ]
 
     try:
-        with driver.session(database=database) as session:
-            for statement in statements:
-                session.run(statement).consume()
-    except Exception as exc:  # noqa: BLE001 - translated immediately below
+        transact.run_autocommit(driver, database, statements, query_kind="schema")
+    except DatabaseUnavailable as exc:
+        # A real connection problem (defunct/paused, already retried once by
+        # run_autocommit) gets its own accurate message from there - only a
+        # non-connection failure (permission, too-old Neo4j) is worth
+        # replacing with the more actionable hint below.
+        if isinstance(exc.__cause__, (ServiceUnavailable, SessionExpired, TransientError)):
+            raise
         raise DatabaseUnavailable(
-            f"Could not apply the database schema: {exc}",
+            f"Could not apply the database schema: {exc.__cause__ or exc}",
             hint=(
                 "The account may lack permission to create constraints or "
                 "indexes, or the server may be too old for vector indexes "
@@ -75,14 +81,10 @@ def stored_vector_dimension(driver: Driver, database: str) -> int | None:
     Raises a typed error rather than a raw driver exception, so the non-fatal
     startup path can actually catch it.
     """
-    try:
-        with driver.session(database=database) as session:
-            record = session.run(cypher.CHUNK_DIMENSION).single()
-    except Exception as exc:  # noqa: BLE001 - translated immediately below
-        raise DatabaseUnavailable(
-            f"Could not read the stored vector dimension: {exc}"
-        ) from exc
-    return record["dimension"] if record else None
+    records = transact.run(
+        driver, database, cypher.CHUNK_DIMENSION, write=False, query_kind="schema"
+    )
+    return records[0]["dimension"] if records else None
 
 
 def index_vector_dimension(driver: Driver, database: str) -> int | None:
@@ -93,13 +95,10 @@ def index_vector_dimension(driver: Driver, database: str) -> int | None:
     index at the old width in place. With the chunks cleared, nothing else can
     detect the mismatch, and new embeddings are silently rejected by the index.
     """
-    try:
-        with driver.session(database=database) as session:
-            record = session.run(cypher.SHOW_VECTOR_INDEX).single()
-    except Exception as exc:  # noqa: BLE001 - translated immediately below
-        raise DatabaseUnavailable(
-            f"Could not read the vector index configuration: {exc}"
-        ) from exc
+    records = transact.run(
+        driver, database, cypher.SHOW_VECTOR_INDEX, write=False, query_kind="schema"
+    )
+    record = records[0] if records else None
 
     if not record:
         return None

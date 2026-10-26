@@ -19,7 +19,12 @@ from neo4j.exceptions import (
     TransientError,
 )
 
-from app.config import NEO4J_CONNECTION_TIMEOUT_SECONDS, get_settings
+from app.config import (
+    NEO4J_CONNECTION_TIMEOUT_SECONDS,
+    NEO4J_LIVENESS_CHECK_TIMEOUT_SECONDS,
+    NEO4J_MAX_CONNECTION_LIFETIME_SECONDS,
+    get_settings,
+)
 from app.errors import AppError, DatabaseUnavailable
 from app.logging_conf import get_logger
 
@@ -33,6 +38,10 @@ def make_driver(*, uri: str, username: str, password: str) -> Driver:
             uri,
             auth=(username, password),
             connection_timeout=NEO4J_CONNECTION_TIMEOUT_SECONDS,
+            # AuraDB Free's own proxy drops idle connections well inside the
+            # driver's 1-hour default - see NEO4J_MAX_CONNECTION_LIFETIME_SECONDS.
+            max_connection_lifetime=NEO4J_MAX_CONNECTION_LIFETIME_SECONDS,
+            liveness_check_timeout=NEO4J_LIVENESS_CHECK_TIMEOUT_SECONDS,
         )
     except ConfigurationError as exc:
         raise DatabaseUnavailable(

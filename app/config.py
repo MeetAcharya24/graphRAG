@@ -124,6 +124,22 @@ RETRY_MAX_DELAY_SECONDS = 60.0
 # failure, so this stays short.
 NEO4J_CONNECTION_TIMEOUT_SECONDS = 15.0
 
+# Live-diagnosed (see PLAN.md): AuraDB Free's own proxy silently drops idle
+# connections well inside the driver's 1-hour default lifetime, so a pooled
+# connection can look fine to the driver yet already be dead server-side -
+# "Failed to read from defunct connection". Recycled well under that window;
+# paired with a liveness check so a connection sitting idle for even a
+# fraction of its lifetime is actively validated (a RESET) before reuse
+# instead of just trusted.
+NEO4J_MAX_CONNECTION_LIFETIME_SECONDS = 300.0
+NEO4J_LIVENESS_CHECK_TIMEOUT_SECONDS = 60.0
+
+# A brief pause before the one extra reconnect attempt in app/db/transact.py,
+# for when the driver's own managed-transaction retry (bounded by
+# max_transaction_retry_time, 30s by default) still was not enough - immediate
+# retry into the same just-failed pool rarely helps.
+NEO4J_RECONNECT_PAUSE_SECONDS = 2.0
+
 # --- Access control (D11) --------------------------------------------------
 SESSION_COOKIE_NAME = "graphrag_session"
 SESSION_TOKEN_PAYLOAD = "authenticated"

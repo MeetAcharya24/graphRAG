@@ -17,7 +17,8 @@ from typing import Sequence
 
 from neo4j import Driver
 
-from app.errors import DatabaseUnavailable, EntityNotFound
+from app.db import transact
+from app.errors import EntityNotFound
 from app.graph import cypher
 from app.graph.base import normalize_name
 from app.logging_conf import get_logger
@@ -56,23 +57,17 @@ class Neo4jGraphStore:
         self._driver = driver
         self._database = database
 
-    def _run(self, query: str, **params):
-        try:
-            with self._driver.session(database=self._database) as session:
-                return list(session.run(query, **params))
-        except DatabaseUnavailable:
-            raise
-        except Exception as exc:  # noqa: BLE001 - translated immediately below
-            raise DatabaseUnavailable(
-                f"A graph query failed: {exc}",
-                hint="The database may have paused while idle; try again.",
-            ) from exc
+    def _run(self, query: str, *, write: bool, **params):
+        return transact.run(
+            self._driver, self._database, query, write=write, query_kind="graph", **params
+        )
 
     # --- writing ---
 
     def upsert_entity(self, entity: Entity) -> Entity:
         records = self._run(
             cypher.UPSERT_ENTITY,
+            write=True,
             entity_id=entity.entity_id,
             name=entity.name,
             name_normalized=normalize_name(entity.name),
@@ -90,6 +85,7 @@ class Neo4jGraphStore:
         # silent no-op, so a dangling edge would be accepted without a word.
         found = self._run(
             cypher.ENDPOINTS_EXIST,
+            write=False,
             entity_ids=[relation.source_id, relation.target_id],
         )[0]["found"]
 
@@ -102,6 +98,7 @@ class Neo4jGraphStore:
 
         self._run(
             cypher.UPSERT_RELATION,
+            write=True,
             rel_id=relation.rel_id,
             source_id=relation.source_id,
             target_id=relation.target_id,
@@ -114,11 +111,11 @@ class Neo4jGraphStore:
     # --- reading ---
 
     def get_entity(self, entity_id: str) -> Entity | None:
-        records = self._run(cypher.GET_ENTITY, entity_id=entity_id)
+        records = self._run(cypher.GET_ENTITY, write=False, entity_id=entity_id)
         return _entity_from_node(records[0]["e"]) if records else None
 
     def get_relation(self, rel_id: str) -> Relation | None:
-        records = self._run(cypher.GET_RELATION, rel_id=rel_id)
+        records = self._run(cypher.GET_RELATION, write=False, rel_id=rel_id)
         if not records:
             return None
         record = records[0]
@@ -135,16 +132,21 @@ class Neo4jGraphStore:
         )
 
     def find_entities_by_name(self, name: str) -> list[Entity]:
-        records = self._run(cypher.FIND_ENTITIES_BY_NAME, name=normalize_name(name))
+        records = self._run(
+            cypher.FIND_ENTITIES_BY_NAME, write=False, name=normalize_name(name)
+        )
         return [_entity_from_node(record["e"]) for record in records]
 
     def all_entities(self) -> list[Entity]:
-        return [_entity_from_node(record["e"]) for record in self._run(cypher.ALL_ENTITIES)]
+        records = self._run(cypher.ALL_ENTITIES, write=False)
+        return [_entity_from_node(record["e"]) for record in records]
 
     def stats(self) -> dict[str, int]:
         return {
-            "entity_count": self._run(cypher.COUNT_ENTITIES)[0]["entity_count"],
-            "relation_count": self._run(cypher.COUNT_RELATIONS)[0]["relation_count"],
+            "entity_count": self._run(cypher.COUNT_ENTITIES, write=False)[0]["entity_count"],
+            "relation_count": self._run(cypher.COUNT_RELATIONS, write=False)[0][
+                "relation_count"
+            ],
         }
 
     # --- traversal ---
@@ -154,7 +156,7 @@ class Neo4jGraphStore:
         if not ids or max_hops < 1:
             return []
 
-        records = self._run(cypher.neighbors(max_hops), entity_ids=ids)
+        records = self._run(cypher.neighbors(max_hops), write=False, entity_ids=ids)
         return [_entity_from_node(record["other"]) for record in records]
 
     def shortest_paths(
@@ -165,6 +167,7 @@ class Neo4jGraphStore:
 
         records = self._run(
             cypher.shortest_paths(max_hops),
+            write=False,
             source_id=source_id,
             target_id=target_id,
         )
@@ -179,22 +182,22 @@ class Neo4jGraphStore:
     # --- dedup support (Phase 5) ---
 
     def relations_of(self, entity_id: str) -> list[Relation]:
-        records = self._run(cypher.RELATIONS_OF_ENTITY, entity_id=entity_id)
+        records = self._run(cypher.RELATIONS_OF_ENTITY, write=False, entity_id=entity_id)
         return [_relation_from_mapping(record) for record in records]
 
     def delete_entity(self, entity_id: str) -> bool:
-        records = self._run(cypher.DELETE_ENTITY, entity_id=entity_id)
+        records = self._run(cypher.DELETE_ENTITY, write=True, entity_id=entity_id)
         return bool(records and records[0]["removed"])
 
     def remove_mentions(self, chunk_ids: Sequence[str]) -> int:
         ids = list(chunk_ids)
         if not ids:
             return 0
-        records = self._run(cypher.REMOVE_MENTIONS, chunk_ids=ids)
+        records = self._run(cypher.REMOVE_MENTIONS, write=True, chunk_ids=ids)
         return records[0]["touched"] if records else 0
 
     # --- cleanup ---
 
     def delete_orphaned_entities(self) -> int:
-        records = self._run(cypher.DELETE_ORPHANED_ENTITIES)
+        records = self._run(cypher.DELETE_ORPHANED_ENTITIES, write=True)
         return records[0]["removed"] if records else 0

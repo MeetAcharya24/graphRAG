@@ -18,7 +18,7 @@ from typing import Sequence
 
 from neo4j import Driver
 
-from app.errors import DatabaseUnavailable
+from app.db import transact
 from app.graph import cypher
 from app.logging_conf import get_logger
 from app.schemas import Chunk
@@ -43,17 +43,10 @@ class Neo4jVectorStore:
         self._driver = driver
         self._database = database
 
-    def _run(self, query: str, **params):
-        try:
-            with self._driver.session(database=self._database) as session:
-                return list(session.run(query, **params))
-        except DatabaseUnavailable:
-            raise
-        except Exception as exc:  # noqa: BLE001 - translated immediately below
-            raise DatabaseUnavailable(
-                f"A vector query failed: {exc}",
-                hint="The database may have paused while idle; try again.",
-            ) from exc
+    def _run(self, query: str, *, write: bool, **params):
+        return transact.run(
+            self._driver, self._database, query, write=write, query_kind="vector", **params
+        )
 
     # --- writing ---
 
@@ -76,7 +69,7 @@ class Neo4jVectorStore:
             }
             for chunk, vector in zip(chunks, vectors)
         ]
-        self._run(cypher.UPSERT_CHUNKS, rows=rows)
+        self._run(cypher.UPSERT_CHUNKS, write=True, rows=rows)
 
     # --- reading ---
 
@@ -93,7 +86,7 @@ class Neo4jVectorStore:
             )
 
         records = self._run(
-            cypher.QUERY_VECTORS, k=int(k), vector=[float(v) for v in vector]
+            cypher.QUERY_VECTORS, write=False, k=int(k), vector=[float(v) for v in vector]
         )
         results = [
             ScoredChunk(chunk=_chunk_from_record(record), score=record["score"])
@@ -110,7 +103,7 @@ class Neo4jVectorStore:
         ids = list(chunk_ids)
         if not ids:
             return []
-        records = self._run(cypher.GET_CHUNKS_BY_IDS, chunk_ids=ids)
+        records = self._run(cypher.GET_CHUNKS_BY_IDS, write=False, chunk_ids=ids)
         # Returned in the order asked for, matching the in-memory store. The
         # database yields its own order, and a caller that renders citations in
         # sequence would otherwise be correct in tests and wrong in production.
@@ -118,17 +111,17 @@ class Neo4jVectorStore:
         return [by_id[cid] for cid in ids if cid in by_id]
 
     def count(self) -> int:
-        return self._run(cypher.COUNT_CHUNKS)[0]["total"]
+        return self._run(cypher.COUNT_CHUNKS, write=False)[0]["total"]
 
     def document_ids(self) -> set[str]:
-        return set(self._run(cypher.DOCUMENT_IDS)[0]["doc_ids"] or ())
+        return set(self._run(cypher.DOCUMENT_IDS, write=False)[0]["doc_ids"] or ())
 
     def _stored_dimension(self) -> int | None:
-        records = self._run(cypher.CHUNK_DIMENSION)
+        records = self._run(cypher.CHUNK_DIMENSION, write=False)
         return records[0]["dimension"] if records else None
 
     # --- deleting ---
 
     def delete_doc(self, doc_id: str) -> int:
-        records = self._run(cypher.DELETE_DOCUMENT, doc_id=doc_id)
+        records = self._run(cypher.DELETE_DOCUMENT, write=True, doc_id=doc_id)
         return records[0]["removed"] if records else 0
