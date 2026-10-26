@@ -6,11 +6,18 @@ class goes in as `response_schema` and comes back on `response.parsed`.
 
 from __future__ import annotations
 
+import time
+
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
 
-from app.config import EXTRACTION_THINKING_BUDGET, LLM_TIMEOUT_SECONDS
+from app.config import (
+    ANSWER_THINKING_BUDGET,
+    ANSWER_TIMEOUT_SECONDS,
+    EXTRACTION_THINKING_BUDGET,
+    LLM_TIMEOUT_SECONDS,
+)
 from app.errors import (
     AppError,
     ConfigError,
@@ -204,6 +211,30 @@ class _ThinkingUnsupported(Exception):
     """
 
 
+class _DeadlineExceeded(Exception):
+    """Internal signal: Gemini's own server deadline expired mid-call.
+
+    Raised with `from exc` so the original SDK exception is `__cause__`, in
+    case a retry also fails and needs translating. Never escapes
+    `generate_structured`.
+    """
+
+
+def _is_deadline_exceeded(exc: Exception) -> bool:
+    """True for the free-tier "ran out of time mid-generation" server error.
+
+    Live-diagnosed cause: the model temporarily overloaded, not unbounded
+    thinking (a thinking_budget=0 call hit this identically) - but either
+    way, one fresh attempt is cheap and often succeeds, so it is worth an
+    automatic retry rather than failing the request outright.
+    """
+    if not isinstance(exc, genai_errors.ServerError):
+        return False
+    status = str(getattr(exc, "status", "") or "").upper()
+    message = str(getattr(exc, "message", "") or exc).lower()
+    return "DEADLINE_EXCEEDED" in status or "deadline expired" in message
+
+
 def _is_thinking_rejection(exc: Exception) -> bool:
     """True for any 400 from a call that set a thinking budget.
 
@@ -287,32 +318,86 @@ class GeminiProvider:
     ) -> SchemaT:
         def call(limit_thinking: bool) -> SchemaT:
             """One API call. Raises _ThinkingUnsupported for a 400 that names
-            the thinking budget, so the caller can retry without it."""
+            the thinking budget, so the caller can retry without it, and
+            _DeadlineExceeded for Gemini's own server-side timeout, so the
+            caller can retry once."""
             config = types.GenerateContentConfig(
                 system_instruction=system,
                 response_mime_type="application/json",
                 response_schema=schema,
                 max_output_tokens=max_tokens,
             )
+            thinking_budget = EXTRACTION_THINKING_BUDGET if limit_thinking else None
             if limit_thinking:
+                # Extraction: thinking adds nothing worth the quota.
                 config.thinking_config = types.ThinkingConfig(
                     thinking_budget=EXTRACTION_THINKING_BUDGET
                 )
+            else:
+                # Answer synthesis: capped as a defensive ceiling, not because
+                # thinking was confirmed as the cause of a free-tier deadline
+                # (live-diagnosed: budget=0 hit the same deadline as an
+                # uncapped call, so the model being temporarily overloaded was
+                # the actual cause that day, not reasoning length). Paired
+                # with an explicit timeout shorter than the SDK's hours-long
+                # default but long enough to give a slow free-tier call a
+                # fair shot before the single retry below.
+                thinking_budget = ANSWER_THINKING_BUDGET
+                config.thinking_config = types.ThinkingConfig(
+                    thinking_budget=thinking_budget
+                )
+                config.http_options = types.HttpOptions(
+                    timeout=int(ANSWER_TIMEOUT_SECONDS * 1000)
+                )
+            log.info(
+                "Gemini generateContent request: model=%s thinking_budget=%s "
+                "max_output_tokens=%d prompt_chars=%d",
+                model,
+                thinking_budget,
+                max_tokens,
+                len(prompt),
+            )
+            start = time.monotonic()
             try:
                 response = self._client.models.generate_content(
                     model=model, contents=prompt, config=config
                 )
             except Exception as exc:  # noqa: BLE001 - translated immediately below
+                elapsed = time.monotonic() - start
+                log.info(
+                    "Gemini generateContent for %s failed after %.2fs: %s",
+                    model,
+                    elapsed,
+                    exc,
+                )
                 if limit_thinking and _is_thinking_rejection(exc):
                     raise _ThinkingUnsupported from exc
+                if _is_deadline_exceeded(exc):
+                    raise _DeadlineExceeded from exc
                 raise translate_error(exc) from exc
+            elapsed = time.monotonic() - start
+            log.info("Gemini generateContent for %s took %.2fs", model, elapsed)
             return _parsed_or_raise(response, schema)
+
+        def call_with_deadline_retry(limit_thinking: bool) -> SchemaT:
+            """One retry, no backoff: a fresh attempt is the whole point -
+            waiting first would only burn more of the same deadline."""
+            try:
+                return call(limit_thinking)
+            except _DeadlineExceeded as exc:
+                log.warning(
+                    "Gemini call for %s hit its own deadline; retrying once.", model
+                )
+                try:
+                    return call(limit_thinking)
+                except _DeadlineExceeded as retry_exc:
+                    raise translate_error(retry_exc.__cause__) from retry_exc
 
         def attempt() -> SchemaT:
             if not minimal_reasoning:
-                return call(limit_thinking=False)
+                return call_with_deadline_retry(limit_thinking=False)
             try:
-                return call(limit_thinking=True)
+                return call_with_deadline_retry(limit_thinking=True)
             except _ThinkingUnsupported:
                 # Not every model accepts a zero thinking budget. Losing the
                 # saving is acceptable; failing the request is not.
@@ -321,7 +406,7 @@ class GeminiProvider:
                 # a second call for a bad key or a stale model id too, doubling
                 # request burn on a free tier whose quota counts requests.
                 log.debug("Model %s rejected a thinking budget; retrying without.", model)
-                return call(limit_thinking=False)
+                return call_with_deadline_retry(limit_thinking=False)
 
         return with_retry(attempt, description=f"{model} structured generation")
 

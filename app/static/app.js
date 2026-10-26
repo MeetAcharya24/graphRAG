@@ -45,9 +45,17 @@ function hideWakeBanner() {
   }
 }
 
-/** POSTs/GETs the API envelope, never throwing: callers branch on `.ok`. */
-async function api(path, options = {}) {
-  showWakeBanner();
+/**
+ * POSTs/GETs the API envelope, never throwing: callers branch on `.ok`.
+ *
+ * `trackWake` opts into the "waking up the server" banner. It is only set
+ * for the login and health calls that make up app *loading* - a slow
+ * in-app call afterwards (asking a question, polling a job) is not the
+ * server waking up, and labelling it that way would mislead, so those
+ * calls never touch the banner no matter how long they take.
+ */
+async function api(path, options = {}, { trackWake = false } = {}) {
+  if (trackWake) showWakeBanner();
   try {
     const response = await fetch(path, { credentials: "same-origin", ...options });
     const body = await response.json();
@@ -68,7 +76,7 @@ async function api(path, options = {}) {
       retryAfter: null,
     };
   } finally {
-    hideWakeBanner();
+    if (trackWake) hideWakeBanner();
   }
 }
 
@@ -115,7 +123,7 @@ async function enterAppView() {
 }
 
 async function refreshStorageBanner() {
-  const result = await api("/api/health");
+  const result = await api("/api/health", {}, { trackWake: true });
   const storage = result.data && result.data.storage;
   if (storage && storage.backend !== "memory" && !storage.connected) {
     storageBanner.textContent = `The database is unreachable${
@@ -133,11 +141,15 @@ loginForm.addEventListener("submit", async (event) => {
   const submitButton = loginForm.querySelector("button[type=submit]");
   submitButton.disabled = true;
 
-  const result = await api("/api/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ password: el("password").value }),
-  });
+  const result = await api(
+    "/api/login",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: el("password").value }),
+    },
+    { trackWake: true }
+  );
 
   submitButton.disabled = false;
   if (!result.ok) {

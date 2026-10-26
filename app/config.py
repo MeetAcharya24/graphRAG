@@ -81,6 +81,24 @@ EXTRACTION_MAX_TOKENS = 4096
 ANSWER_MAX_TOKENS = 16000
 LLM_TIMEOUT_SECONDS = 120.0
 
+# Answer synthesis sees more context and more output tokens than extraction,
+# so it gets its own explicit deadline rather than LLM_TIMEOUT_SECONDS.
+# Live-diagnosed (see PLAN.md): a free-tier gemini-3.8-flash call can simply
+# sit unresponsive for well over a minute with no useful signal either way -
+# raising this further only makes a user wait longer for the one automatic
+# retry to also time out, so it is generous but bounded, not "as long as it
+# takes."
+ANSWER_TIMEOUT_SECONDS = 90.0
+
+# Thinking budget cap for the answer call, in tokens. A defensive ceiling,
+# not a fix for the deadline above: live-diagnosed, a call with
+# thinking_budget=0 hit the exact same deadline as an uncapped one, so an
+# overloaded free-tier model - not reasoning length - was the actual cause
+# that day. Still capped rather than disabled (unlike
+# EXTRACTION_THINKING_BUDGET) - the final answer benefits from some
+# reasoning that per-chunk extraction does not, when the model is healthy.
+ANSWER_THINKING_BUDGET = 4096
+
 # Free-tier friendly: 2 concurrent extraction calls, not 5. A free Gemini key
 # has a low requests-per-minute ceiling, and going wider just trips 429s.
 EXTRACTION_CONCURRENCY = 2

@@ -341,3 +341,101 @@ def test_a_400_triggers_the_no_thinking_retry_even_without_the_word_thinking() -
     assert not _is_thinking_rejection(_client_error(404, "model not found"))
     assert not _is_thinking_rejection(_client_error(429, "Quota exceeded"))
     assert not _is_thinking_rejection(ValueError("unrelated"))
+
+
+# --- a Gemini server deadline is retried once, not failed immediately -----
+
+
+def _server_error(status: str, message: str):
+    """Build a google-genai ServerError without going through its HTTP ctor."""
+    from google.genai import errors as genai_errors
+
+    error = genai_errors.ServerError.__new__(genai_errors.ServerError)
+    error.code = 504
+    error.message = message
+    error.status = status
+    error.details = {"error": {"message": message, "status": status}}
+    return error
+
+
+def _deadline_exceeded():
+    return _server_error(
+        "DEADLINE_EXCEEDED", "Deadline expired before operation could complete."
+    )
+
+
+class _AnswerSchema:
+    """Stand-in for the structured-output schema `generate_structured` validates
+    against - only `isinstance(parsed, schema)` in `_parsed_or_raise` cares."""
+
+    def __init__(self, value: str) -> None:
+        self.value = value
+
+
+def _stub_provider(responses: list):
+    """A GeminiProvider whose client yields `responses` in order on each
+    `generate_content` call - an exception instance is raised, anything else
+    is returned as the SDK response."""
+    from app.llm.gemini_provider import GeminiProvider
+
+    calls: list[int] = []
+
+    class _Models:
+        def generate_content(self, *, model, contents, config):
+            calls.append(1)
+            item = responses[len(calls) - 1]
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+    class _Client:
+        models = _Models()
+
+    provider = object.__new__(GeminiProvider)
+    provider._client = _Client()
+    return provider, calls
+
+
+def test_is_deadline_exceeded_matches_the_free_tier_timeout_message() -> None:
+    from app.llm.gemini_provider import _is_deadline_exceeded
+
+    assert _is_deadline_exceeded(_deadline_exceeded())
+    assert not _is_deadline_exceeded(_client_error(429, "Quota exceeded"))
+    assert not _is_deadline_exceeded(ValueError("unrelated"))
+
+
+def test_a_deadline_exceeded_answer_call_is_retried_once_then_succeeds() -> None:
+    """The bug this guards: a free-tier answer call that blows past Gemini's
+    own server deadline (likely from unbounded adaptive thinking) used to
+    fail the request outright. One fresh attempt usually succeeds, so it is
+    worth a single automatic retry before surfacing an error."""
+    from types import SimpleNamespace
+
+    ok_response = SimpleNamespace(parsed=_AnswerSchema("ok"))
+    provider, calls = _stub_provider([_deadline_exceeded(), ok_response])
+
+    result = provider.generate_structured(
+        model="gemini-3.8-flash",
+        prompt="question",
+        schema=_AnswerSchema,
+        max_tokens=100,
+    )
+
+    assert result.value == "ok"
+    assert len(calls) == 2  # the original attempt, plus exactly one retry
+
+
+def test_two_consecutive_deadlines_surface_as_a_clear_unavailable_error() -> None:
+    from app.errors import LLMUnavailable
+
+    provider, calls = _stub_provider([_deadline_exceeded(), _deadline_exceeded()])
+
+    with pytest.raises(LLMUnavailable):
+        provider.generate_structured(
+            model="gemini-3.8-flash",
+            prompt="question",
+            schema=_AnswerSchema,
+            max_tokens=100,
+        )
+
+    assert len(calls) == 2  # no third attempt - the retry budget is exactly one
