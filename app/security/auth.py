@@ -25,6 +25,8 @@ from itsdangerous import BadSignature, SignatureExpired, TimestampSigner
 from app.config import (
     LOGIN_MAX_ATTEMPTS,
     LOGIN_WINDOW_SECONDS,
+    QUOTA_MAX_ATTEMPTS,
+    QUOTA_WINDOW_SECONDS,
     SESSION_COOKIE_NAME,
     SESSION_TOKEN_PAYLOAD,
     SESSION_TTL_SECONDS,
@@ -44,6 +46,13 @@ PUBLIC_PREFIXES = ("/static/",)
 
 login_limiter = RateLimiter(
     capacity=LOGIN_MAX_ATTEMPTS, per_seconds=LOGIN_WINDOW_SECONDS
+)
+
+# Shared by /api/documents and /api/ask: both spend Gemini quota, so a
+# stranger behind the shared password is capped on the sum of the two, not
+# each independently.
+quota_limiter = RateLimiter(
+    capacity=QUOTA_MAX_ATTEMPTS, per_seconds=QUOTA_WINDOW_SECONDS
 )
 
 

@@ -20,7 +20,7 @@ from app.config import (
     SESSION_COOKIE_NAME,
     get_settings,
 )
-from app.errors import AppError, JobNotFound, TooManyChunks, ok
+from app.errors import AppError, JobNotFound, TooManyChunks, TooManyRequests, ok
 from app.ingest import pipeline
 from app.ingest.chunker import chunk_text
 from app.ingest.loaders import load_document
@@ -151,7 +151,13 @@ app = FastAPI(
 @app.exception_handler(AppError)
 async def app_error_handler(_request: Request, exc: AppError) -> JSONResponse:
     log.warning("%s: %s", exc.code, exc.message)
-    return JSONResponse(status_code=exc.status_code, content=exc.to_envelope())
+    headers = {}
+    retry_after = getattr(exc, "retry_after", None)
+    if retry_after:
+        headers["Retry-After"] = str(int(retry_after) + 1)
+    return JSONResponse(
+        status_code=exc.status_code, content=exc.to_envelope(), headers=headers
+    )
 
 
 @app.exception_handler(Exception)
@@ -255,6 +261,24 @@ def _storage_health(settings) -> dict:
         }
 
 
+def _enforce_quota_limit(request: Request) -> None:
+    """Spend one token from the shared quota bucket, or refuse the request.
+
+    Shared by /api/documents and /api/ask (both spend Gemini quota) so a
+    caller is capped on the sum of the two, not each independently.
+    """
+    caller = auth.client_ip(request)
+    decision = auth.quota_limiter.allow(caller)
+    if not decision.allowed:
+        log.warning("Quota rate limit hit for %s", caller)
+        retry_after = int(decision.retry_after) + 1
+        raise TooManyRequests(
+            "Too many requests.",
+            hint=f"Try again in about {retry_after} seconds.",
+            retry_after=retry_after,
+        )
+
+
 class LoginRequest(BaseModel):
     """The login form's only field."""
 
@@ -345,7 +369,7 @@ async def logout() -> JSONResponse:
 
 
 @app.post("/api/documents")
-async def upload_document(file: UploadFile = File(...)) -> dict:
+async def upload_document(request: Request, file: UploadFile = File(...)) -> dict:
     """Accept an upload and hand the slow part to a background job (Phase 8).
 
     Loading, chunking, and the chunk-count ceiling check are all cheap and
@@ -355,6 +379,8 @@ async def upload_document(file: UploadFile = File(...)) -> dict:
     and can take minutes, run afterwards in a worker thread; the client polls
     `GET /api/jobs/{job_id}` for progress.
     """
+    _enforce_quota_limit(request)
+
     data = await file.read()
     document = load_document(file.filename or "", data)
     chunks = chunk_text(document.text, doc_id=document.doc_id)
@@ -426,7 +452,7 @@ class AskRequest(BaseModel):
 
 
 @app.post("/api/ask")
-def ask(body: AskRequest) -> dict:
+def ask(request: Request, body: AskRequest) -> dict:
     """Answer a question from the hybrid evidence bundle (Phase 7).
 
     Deliberately `def`, not `async def`: embedding the question and calling the
@@ -438,6 +464,8 @@ def ask(body: AskRequest) -> dict:
     empty bundle costs no LLM call, and every citation the model returns is
     verified against the bundle before it can reach the response.
     """
+    _enforce_quota_limit(request)
+
     bundle = hybrid_retrieve(
         body.question,
         store=get_graph_store(),

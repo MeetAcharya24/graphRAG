@@ -117,6 +117,11 @@ SESSION_COOKIE_SECURE = True
 # at machine speed.
 LOGIN_MAX_ATTEMPTS = 8
 LOGIN_WINDOW_SECONDS = 300
+# Quota-spending requests allowed per IP per window, shared by /api/documents
+# and /api/ask - both call the Gemini API, so one stranger behind a shared
+# password cannot drain the free-tier quota meant for everyone else.
+QUOTA_MAX_ATTEMPTS = 20
+QUOTA_WINDOW_SECONDS = 60
 
 # --- Logging ---------------------------------------------------------------
 VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")

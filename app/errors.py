@@ -68,6 +68,22 @@ class JobNotFound(AppError):
     code = "job_not_found"
 
 
+# --- access control (Phase 9, D11) ------------------------------------------
+
+
+class TooManyRequests(AppError):
+    """A per-IP rate limit was exceeded on a quota-spending route."""
+
+    status_code = 429
+    code = "too_many_requests"
+
+    def __init__(
+        self, message: str, *, hint: str | None = None, retry_after: float = 0.0
+    ) -> None:
+        super().__init__(message, hint=hint)
+        self.retry_after = retry_after
+
+
 # --- storage (Phases 2-3) --------------------------------------------------
 
 

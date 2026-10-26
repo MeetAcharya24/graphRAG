@@ -41,7 +41,7 @@ _SETTINGS_ENV_VARS = (
 def _clear_caches() -> None:
     from app.config import get_settings
     from app.llm.factory import get_provider
-    from app.security.auth import login_limiter
+    from app.security.auth import login_limiter, quota_limiter
     from app.db.driver import get_driver
     from app.jobs.registry import get_job_registry
     from app.vector.factory import (
@@ -66,6 +66,7 @@ def _clear_caches() -> None:
     # Module-level state: without this, one test's failed logins would throttle
     # the next test's.
     login_limiter.clear()
+    quota_limiter.clear()
 
 
 @pytest.fixture(autouse=True)
