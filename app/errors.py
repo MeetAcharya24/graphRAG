@@ -55,6 +55,19 @@ class UploadTooLarge(AppError):
     code = "upload_too_large"
 
 
+class TooManyChunks(AppError):
+    status_code = 422
+    code = "too_many_chunks"
+
+
+# --- background jobs (Phase 8) ---------------------------------------------
+
+
+class JobNotFound(AppError):
+    status_code = 404
+    code = "job_not_found"
+
+
 # --- storage (Phases 2-3) --------------------------------------------------
 
 

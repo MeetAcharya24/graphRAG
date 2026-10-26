@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 
-def _upload(client, filename: str, text: str):
-    return client.post(
+def _upload(client, poll_job, filename: str, text: str) -> dict:
+    """Upload and wait for the background job (Phase 8) before returning."""
+    response = client.post(
         "/api/documents",
         files={"file": (filename, text.encode("utf-8"), "text/plain")},
     )
+    body = response.json()["data"]
+    poll_job(client, body["job_id"])
+    return body
 
 
 def _retrieve(client, question: str):
@@ -29,9 +33,10 @@ def test_retrieve_returns_an_empty_bundle_with_no_documents(auth_client) -> None
     assert body["paths"] == []
 
 
-def test_retrieve_returns_the_bundle_shape_after_an_upload(auth_client) -> None:
+def test_retrieve_returns_the_bundle_shape_after_an_upload(auth_client, poll_job) -> None:
     _upload(
         auth_client,
+        poll_job,
         "hire.txt",
         "Helios Labs announced that Sarah Chen joins as VP of Engineering.",
     )

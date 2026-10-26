@@ -34,12 +34,21 @@ class Chunk(_Frozen):
     text: str
 
 
-class DocumentSummary(_Frozen):
-    """What the upload endpoint reports back."""
+class JobStatus(_Frozen):
+    """What `GET /api/jobs/{job_id}` reports back (Phase 8, D12).
 
+    `state` is one of queued|running|succeeded|failed; `stage` names the step
+    within it (chunking, embedding, extracting, linking).
+    """
+
+    job_id: str
     doc_id: str
     filename: str
-    chunk_count: int = Field(ge=0)
+    state: str
+    stage: str
+    chunks_done: int = Field(ge=0)
+    chunks_total: int = Field(ge=0)
+    error: str | None = None
 
 
 # --- the knowledge graph (Phase 3) ---------------------------------------

@@ -15,11 +15,19 @@ ACQUISITION = "Northwind Systems completed its acquisition of Helios Labs in Mar
 LUNCH = "The cafeteria serves lunch between twelve and two."
 
 
-def _upload(client, filename: str, text: str):
-    return client.post(
+def _upload(client, poll_job, filename: str, text: str) -> dict:
+    """Upload and wait for the background job (Phase 8) before returning.
+
+    Every caller here immediately asks a question about what it just
+    uploaded, so the embedding/extraction job must be finished first.
+    """
+    response = client.post(
         "/api/documents",
         files={"file": (filename, text.encode("utf-8"), "text/plain")},
     )
+    body = response.json()["data"]
+    poll_job(client, body["job_id"])
+    return body
 
 
 def _ask(client, question: str):
@@ -58,8 +66,8 @@ def test_asking_with_no_documents_says_so_without_calling_the_model(
 # --- answering from an uploaded document ----------------------------------
 
 
-def test_a_question_is_answered_and_cited_by_chunk_id(auth_client, fakes) -> None:
-    _upload(auth_client, "deal.txt", ACQUISITION)
+def test_a_question_is_answered_and_cited_by_chunk_id(auth_client, fakes, poll_job) -> None:
+    _upload(auth_client, poll_job, "deal.txt", ACQUISITION)
     chunk_id = _retrieved_chunk_id(auth_client, "Who acquired Helios Labs?")
     fakes["provider"].queue(
         Answer(
@@ -80,8 +88,10 @@ def test_a_question_is_answered_and_cited_by_chunk_id(auth_client, fakes) -> Non
     assert "Northwind" in data["sources"][0]["excerpt"]
 
 
-def test_an_invented_citation_does_not_reach_the_response(auth_client, fakes) -> None:
-    _upload(auth_client, "deal.txt", ACQUISITION)
+def test_an_invented_citation_does_not_reach_the_response(
+    auth_client, fakes, poll_job
+) -> None:
+    _upload(auth_client, poll_job, "deal.txt", ACQUISITION)
     fakes["provider"].queue(
         Answer(answer="Something.", used_chunk_ids=["does-not-exist:9"])
     )
@@ -91,8 +101,8 @@ def test_an_invented_citation_does_not_reach_the_response(auth_client, fakes) ->
     assert data["sources"] == [], "an invented citation must never be rendered"
 
 
-def test_insufficient_evidence_is_passed_through(auth_client, fakes) -> None:
-    _upload(auth_client, "lunch.txt", LUNCH)
+def test_insufficient_evidence_is_passed_through(auth_client, fakes, poll_job) -> None:
+    _upload(auth_client, poll_job, "lunch.txt", LUNCH)
     fakes["provider"].queue(
         Answer(answer="The documents do not cover that.", insufficient_evidence=True)
     )
@@ -121,8 +131,10 @@ def test_an_absurdly_long_question_is_rejected(auth_client) -> None:
 # --- failures reach the client as a clean envelope, not a stack trace ----
 
 
-def test_a_quota_error_is_a_clean_envelope_not_a_stack_trace(auth_client, fakes) -> None:
-    _upload(auth_client, "deal.txt", ACQUISITION)
+def test_a_quota_error_is_a_clean_envelope_not_a_stack_trace(
+    auth_client, fakes, poll_job
+) -> None:
+    _upload(auth_client, poll_job, "deal.txt", ACQUISITION)
     fakes["provider"].queue(LLMQuotaExceeded("Daily quota exhausted."))
 
     response = _ask(auth_client, "Who acquired Helios Labs?")

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
+from uuid import uuid4
 
 from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.responses import JSONResponse
@@ -12,20 +14,22 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app.config import (
+    MAX_CHUNK_COUNT,
     PROJECT_ROOT,
     PROVIDER_GEMINI,
     SESSION_COOKIE_NAME,
     get_settings,
 )
-from app.errors import AppError, ok
+from app.errors import AppError, JobNotFound, TooManyChunks, ok
+from app.ingest import pipeline
 from app.ingest.chunker import chunk_text
 from app.ingest.loaders import load_document
+from app.jobs.registry import get_job_registry
 from app.logging_conf import configure_logging, get_logger
 from app.llm.factory import get_provider
 from app.qa.answerer import answer_question
-from app.schemas import DocumentSummary
+from app.schemas import JobStatus
 from app.security import auth
-from app.graph.extractor import extract_from_chunks
 from app.graph.retrieval import hybrid_retrieve
 from app.vector.factory import (
     get_embedder,
@@ -36,6 +40,16 @@ from app.vector.factory import (
 
 log = get_logger(__name__)
 STATIC_DIR = PROJECT_ROOT / "app" / "static"
+
+# Strong references to in-flight ingestion jobs, so a task is never
+# garbage-collected mid-run just because nothing else holds it (Phase 8).
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _run_in_background(coro) -> None:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 @asynccontextmanager
@@ -330,70 +344,77 @@ async def logout() -> JSONResponse:
     return response
 
 
-def _embed_and_store(chunks: list) -> int:
-    """Embed chunks and store them. Returns how many were newly embedded.
-
-    Blocking: runs in a worker thread, never on the event loop.
-    """
-    store = get_vector_store()
-
-    # Chunk ids are deterministic, so a re-upload of identical content is
-    # already stored. Skipping it before embedding matters: on a free tier a
-    # double-clicked upload would otherwise spend the quota twice.
-    already = {chunk.chunk_id for chunk in store.get_by_ids([c.chunk_id for c in chunks])}
-    pending = [chunk for chunk in chunks if chunk.chunk_id not in already]
-    if not pending:
-        log.info("All %d chunk(s) already embedded; skipping the API call", len(chunks))
-        return 0
-
-    vectors = get_embedder().embed_documents([chunk.text for chunk in pending])
-    store.add(pending, vectors)
-
-    # Extraction comes after the chunks are stored, because the cache marks
-    # them on the :Chunk nodes that the embedding step just created.
-    summary = extract_from_chunks(
-        pending,
-        provider=get_provider(),
-        store=get_graph_store(),
-        cache=get_extraction_cache(),
-    )
-    log.info(
-        "Extraction: %d entities, %d relations, %d batch(es) failed",
-        summary.entities_written,
-        summary.relations_written,
-        summary.batches_failed,
-    )
-    return len(pending)
-
-
 @app.post("/api/documents")
 async def upload_document(file: UploadFile = File(...)) -> dict:
-    """Read an uploaded file, embed it, and report how it chunked.
+    """Accept an upload and hand the slow part to a background job (Phase 8).
 
-    The embedding calls are blocking HTTP, so they are pushed to a worker
-    thread: this process serves every request on one event loop, and a
-    rate-limited retry sleeping on it would freeze the whole app - including
-    the health check Render uses to decide the instance is alive. Phase 8
-    moves ingestion to a background job entirely.
+    Loading, chunking, and the chunk-count ceiling check are all cheap and
+    local, so they still happen on this request - the ceiling in particular
+    must be enforced before any embedding call (D14), never as a silent
+    truncation. Embedding and extraction, the two steps that spend API quota
+    and can take minutes, run afterwards in a worker thread; the client polls
+    `GET /api/jobs/{job_id}` for progress.
     """
     data = await file.read()
     document = load_document(file.filename or "", data)
     chunks = chunk_text(document.text, doc_id=document.doc_id)
 
-    embedded = await run_in_threadpool(_embed_and_store, chunks) if chunks else 0
+    if len(chunks) > MAX_CHUNK_COUNT:
+        raise TooManyChunks(
+            f"{document.filename!r} would produce {len(chunks)} chunks, over "
+            f"the {MAX_CHUNK_COUNT}-chunk limit.",
+            hint=f"Split the document so each piece stays under {MAX_CHUNK_COUNT} chunks.",
+        )
 
-    log.info(
-        "Ingested %s as %s (%d chunks, %d newly embedded)",
-        document.filename,
-        document.doc_id,
-        len(chunks),
-        embedded,
+    registry = get_job_registry()
+    job = registry.create(
+        job_id=uuid4().hex,
+        doc_id=document.doc_id,
+        filename=document.filename,
+        chunks_total=len(chunks),
     )
+
+    _run_in_background(
+        run_in_threadpool(
+            pipeline.run_job,
+            job.job_id,
+            chunks,
+            registry=registry,
+            vector_store=get_vector_store(),
+            embedder=get_embedder(),
+            provider=get_provider(),
+            graph_store=get_graph_store(),
+            extraction_cache=get_extraction_cache(),
+        )
+    )
+
+    log.info("Queued job %s for %s (%d chunks)", job.job_id, document.filename, len(chunks))
+    return ok({"job_id": job.job_id, "doc_id": document.doc_id, "filename": document.filename})
+
+
+@app.get("/api/jobs/{job_id}")
+def get_job(job_id: str) -> dict:
+    """Poll a background ingestion job's progress (Phase 8, D12)."""
+    job = get_job_registry().get(job_id)
+    if job is None:
+        raise JobNotFound(
+            f"No job {job_id!r} found.",
+            hint=(
+                "Jobs are kept in memory and expire; it may be unknown, long "
+                "finished, or from before a restart."
+            ),
+        )
+
     return ok(
-        DocumentSummary(
-            doc_id=document.doc_id,
-            filename=document.filename,
-            chunk_count=len(chunks),
+        JobStatus(
+            job_id=job.job_id,
+            doc_id=job.doc_id,
+            filename=job.filename,
+            state=job.state,
+            stage=job.stage,
+            chunks_done=job.chunks_done,
+            chunks_total=job.chunks_total,
+            error=job.error,
         ).model_dump()
     )
 

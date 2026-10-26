@@ -108,7 +108,7 @@ def test_after_logging_in_a_protected_route_works(client) -> None:
     response = client.post("/api/documents", files=A_FILE)
 
     assert response.status_code == 200
-    assert response.json()["data"]["chunk_count"] == 1
+    assert response.json()["data"]["job_id"]
 
 
 def test_logging_out_revokes_access(client) -> None:

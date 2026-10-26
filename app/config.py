@@ -126,6 +126,16 @@ VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 # quota budget: ~2 batched embedding calls plus ~40 batched extraction calls.
 MAX_UPLOAD_BYTES = 1 * 1024 * 1024
 SUPPORTED_EXTENSIONS = (".pdf", ".txt", ".md")
+# The hard ceiling on chunks per document (D14): rejected before any
+# embedding call is made, never silently truncated.
+MAX_CHUNK_COUNT = 200
+
+# --- Background ingestion jobs (Phase 8, D12) ------------------------------
+# A job is a short-lived progress board, not a permanent record: it is lost on
+# restart (jobs are in-process memory only) and swept by age and by count so
+# one instance cannot accumulate unbounded state from abandoned uploads.
+JOB_TTL_SECONDS = 60 * 60
+JOB_REGISTRY_MAX_SIZE = 500
 
 
 class Settings(BaseSettings):

@@ -1,10 +1,11 @@
-"""Phase 1: the upload endpoint.
+"""Phase 1 upload, re-scoped by Phase 8 for background ingestion (D12).
 
 Uses `auth_client` throughout: the endpoint sits behind the password gate
 (D11), and the gate itself is tested in test_auth.py.
 
-PLAN.md Phase 1 is done when POST /api/documents returns
-{doc_id, filename, chunk_count}.
+PLAN.md Phase 8 is done when POST /api/documents returns
+{job_id, doc_id, filename} immediately, and GET /api/jobs/{job_id} (tested in
+test_jobs_api.py) reports how it finished.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ def _upload(client, filename: str, data: bytes, content_type: str = "text/plain"
 # --- the happy path -------------------------------------------------------
 
 
-def test_uploading_a_text_file_returns_the_document_summary(auth_client) -> None:
+def test_uploading_a_text_file_returns_a_job_id_immediately(auth_client) -> None:
     response = _upload(auth_client, "notes.txt", LONG_BODY)
 
     assert response.status_code == 200
@@ -40,31 +41,41 @@ def test_uploading_a_text_file_returns_the_document_summary(auth_client) -> None
     data = body["data"]
     assert data["filename"] == "notes.txt"
     assert len(data["doc_id"]) == 16
-    assert data["chunk_count"] >= 1
+    assert data["job_id"]
+    assert set(data) == {"job_id", "doc_id", "filename"}
 
 
-def test_uploading_a_markdown_file_works(auth_client) -> None:
+def test_uploading_a_markdown_file_produces_one_chunk(auth_client, poll_job) -> None:
     response = _upload(auth_client, "brief.md", b"# Title\n\nSome content here.")
+    job_id = response.json()["data"]["job_id"]
 
-    assert response.status_code == 200
-    assert response.json()["data"]["chunk_count"] == 1
+    job = poll_job(auth_client, job_id)
+
+    assert job["state"] == "succeeded"
+    assert job["chunks_total"] == 1
 
 
-def test_uploading_a_pdf_works(auth_client) -> None:
+def test_uploading_a_pdf_works(auth_client, poll_job) -> None:
     pdf = build_text_pdf("Northwind Systems acquired Helios Labs")
 
     response = _upload(auth_client, "deal.pdf", pdf, "application/pdf")
+    job_id = response.json()["data"]["job_id"]
 
-    assert response.status_code == 200
-    assert response.json()["data"]["chunk_count"] >= 1
+    job = poll_job(auth_client, job_id)
+
+    assert job["state"] == "succeeded"
+    assert job["chunks_total"] >= 1
 
 
-def test_a_long_document_reports_several_chunks(auth_client) -> None:
+def test_a_long_document_reports_several_chunks(auth_client, poll_job) -> None:
     body = (" ".join(f"word{i:04d}" for i in range(1200))).encode("utf-8")
 
     response = _upload(auth_client, "long.txt", body)
+    job_id = response.json()["data"]["job_id"]
 
-    assert response.json()["data"]["chunk_count"] > 1
+    job = poll_job(auth_client, job_id)
+
+    assert job["chunks_total"] > 1
 
 
 def test_re_uploading_the_same_file_returns_the_same_doc_id(auth_client) -> None:
@@ -108,6 +119,24 @@ def test_an_oversized_upload_is_rejected_with_413(auth_client) -> None:
 
     assert response.status_code == 413
     assert response.json()["error"]["code"] == "upload_too_large"
+
+
+def test_a_document_over_the_chunk_ceiling_is_rejected_before_any_embedding(
+    auth_client, fakes
+) -> None:
+    """D14: the ceiling check happens before any embedding call is made."""
+    from app.config import MAX_CHUNK_COUNT, MAX_UPLOAD_BYTES
+
+    body = " ".join(f"word{i:06d}" for i in range(90_000)).encode("utf-8")
+    assert len(body) < MAX_UPLOAD_BYTES, "the fixture must stay under the size cap"
+
+    response = _upload(auth_client, "huge.txt", body)
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "too_many_chunks"
+    assert str(MAX_CHUNK_COUNT) in error["hint"]
+    assert fakes["store"].count() == 0, "rejected before any chunk was embedded"
 
 
 def test_a_request_with_no_file_is_rejected(auth_client) -> None:

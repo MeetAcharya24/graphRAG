@@ -43,6 +43,7 @@ def _clear_caches() -> None:
     from app.llm.factory import get_provider
     from app.security.auth import login_limiter
     from app.db.driver import get_driver
+    from app.jobs.registry import get_job_registry
     from app.vector.factory import (
         get_embedder,
         get_extraction_cache,
@@ -59,6 +60,9 @@ def _clear_caches() -> None:
     get_graph_store.cache_clear()
     get_extraction_cache.cache_clear()
     get_driver.cache_clear()
+    # A fresh job registry per test, or one test's background job could still
+    # be "running" by the time the next test polls the same job_id space.
+    get_job_registry.cache_clear()
     # Module-level state: without this, one test's failed logins would throttle
     # the next test's.
     login_limiter.clear()
@@ -164,6 +168,31 @@ def auth_client(client):
     response = client.post("/api/login", json={"password": "test-password-not-real"})
     assert response.status_code == 200, "login fixture failed"
     return client
+
+
+@pytest.fixture
+def poll_job():
+    """A function tests use to wait for a background job to finish (Phase 8).
+
+    Upload now returns before embedding/extraction happen; any test that
+    needs that work done - to ask a question right after uploading, or to
+    check the final chunk count - polls with this instead of assuming it is
+    already finished.
+    """
+    import time
+
+    def _poll(client, job_id: str, timeout: float = 5.0) -> dict:
+        deadline = time.monotonic() + timeout
+        last: dict | None = None
+        while time.monotonic() < deadline:
+            response = client.get(f"/api/jobs/{job_id}")
+            last = response.json()["data"]
+            if last["state"] in ("succeeded", "failed"):
+                return last
+            time.sleep(0.02)
+        raise AssertionError(f"job {job_id} did not finish within {timeout}s: {last}")
+
+    return _poll
 
 
 @pytest.fixture
