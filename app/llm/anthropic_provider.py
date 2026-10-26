@@ -123,6 +123,7 @@ class AnthropicProvider:
         system: str | None = None,
         max_tokens: int,
         minimal_reasoning: bool = False,
+        fallback_model: str | None = None,  # noqa: ARG002 - not wired up for Anthropic
     ) -> SchemaT:
         def attempt() -> SchemaT:
             kwargs = {

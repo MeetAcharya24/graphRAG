@@ -41,6 +41,7 @@ class FakeLLM:
         system: str | None = None,
         max_tokens: int,
         minimal_reasoning: bool = False,
+        fallback_model: str | None = None,
     ) -> SchemaT:
         self.calls.append(
             {
@@ -50,6 +51,7 @@ class FakeLLM:
                 "system": system,
                 "max_tokens": max_tokens,
                 "minimal_reasoning": minimal_reasoning,
+                "fallback_model": fallback_model,
             }
         )
 

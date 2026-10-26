@@ -183,6 +183,13 @@ class Settings(BaseSettings):
     gemini_answer_model: str = Field(
         default=DEFAULT_GEMINI_ANSWER_MODEL, alias="GEMINI_ANSWER_MODEL"
     )
+    # A second, independently-chosen answer model to fall back to when the
+    # preferred one times out twice in a row (see ANSWER_TIMEOUT_SECONDS).
+    # Blank by default - no fallback is attempted unless one is configured,
+    # since a wrong guess here would be worse than failing cleanly.
+    gemini_answer_fallback_model: str = Field(
+        default="", alias="GEMINI_ANSWER_FALLBACK_MODEL"
+    )
     anthropic_extraction_model: str = Field(
         default=DEFAULT_ANTHROPIC_EXTRACTION_MODEL, alias="ANTHROPIC_EXTRACTION_MODEL"
     )
@@ -196,6 +203,9 @@ class Settings(BaseSettings):
     # Provider-agnostic overrides; win over the per-provider values above.
     extraction_model_override: str = Field(default="", alias="GRAPHRAG_EXTRACTION_MODEL")
     answer_model_override: str = Field(default="", alias="GRAPHRAG_ANSWER_MODEL")
+    answer_fallback_model_override: str = Field(
+        default="", alias="GRAPHRAG_ANSWER_FALLBACK_MODEL"
+    )
 
     app_password: str = Field(default="", alias="APP_PASSWORD")
     session_secret: str = Field(default="", alias="SESSION_SECRET")
@@ -288,6 +298,17 @@ class Settings(BaseSettings):
             self.anthropic_answer_model,
             DEFAULT_ANTHROPIC_ANSWER_MODEL,
         )
+
+    @property
+    def answer_fallback_model(self) -> str:
+        """A second answer model to try if `answer_model` times out twice in
+        a row, or "" when none is configured (no fallback is attempted)."""
+        if self.provider == PROVIDER_GEMINI:
+            return self._first_set(
+                self.answer_fallback_model_override,
+                self.gemini_answer_fallback_model,
+            )
+        return self._first_set(self.answer_fallback_model_override)
 
     @property
     def resolved_embedding_model(self) -> str:

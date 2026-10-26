@@ -125,10 +125,16 @@ class LLMProvider(Protocol):
         system: str | None = None,
         max_tokens: int,
         minimal_reasoning: bool = False,
+        fallback_model: str | None = None,
     ) -> SchemaT:
         """Return a validated instance of `schema`.
 
         `minimal_reasoning` asks the provider to skip internal reasoning where
         it can - used for per-chunk extraction, where it saves quota.
+
+        `fallback_model` is tried once, on its own retry budget, if `model`
+        times out twice in a row (original attempt + its one retry) - a free
+        tier model can go temporarily unresponsive while a different one on
+        the same key answers normally.
         """
         ...

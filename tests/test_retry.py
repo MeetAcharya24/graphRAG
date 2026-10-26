@@ -439,3 +439,153 @@ def test_two_consecutive_deadlines_surface_as_a_clear_unavailable_error() -> Non
         )
 
     assert len(calls) == 2  # no third attempt - the retry budget is exactly one
+
+
+# --- a client-side socket timeout counts as a deadline too -----------------
+
+
+def test_a_client_side_read_timeout_is_classified_as_deadline_exceeded() -> None:
+    """The bug this guards: a socket/read timeout (the transport giving up
+    before Gemini ever responds) never reaches google-genai's own
+    ServerError/ClientError types - it surfaces as a raw transport
+    exception. Without this, the retry in `generate_structured` never ran,
+    and the request failed as an opaque "Unexpected failure"."""
+    from app.llm.gemini_provider import _is_deadline_exceeded
+
+    assert _is_deadline_exceeded(TimeoutError("The read operation timed out"))
+    assert _is_deadline_exceeded(ConnectionError("Connect timeout."))
+    # Still narrow: an unrelated error must not be swept in just because it
+    # is not a recognised genai type.
+    assert not _is_deadline_exceeded(ValueError("bad schema"))
+
+
+def test_a_client_side_timeout_translates_to_unavailable_not_bad_response() -> None:
+    """Reproduces the exact reported bug: "Unexpected failure talking to
+    Gemini: The read operation timed out" instead of a clear, already
+    labelled-transient error."""
+    from app.errors import LLMBadResponse, LLMUnavailable
+    from app.llm.gemini_provider import translate_error
+
+    translated = translate_error(TimeoutError("The read operation timed out"))
+
+    assert isinstance(translated, LLMUnavailable)
+    assert not isinstance(translated, LLMBadResponse)
+    assert "did not respond in time" in translated.message.lower()
+
+
+def test_a_client_side_timeout_is_retried_once_just_like_a_server_deadline() -> None:
+    from types import SimpleNamespace
+
+    ok_response = SimpleNamespace(parsed=_AnswerSchema("ok"))
+    provider, calls = _stub_provider(
+        [TimeoutError("The read operation timed out"), ok_response]
+    )
+
+    result = provider.generate_structured(
+        model="gemini-3.8-flash",
+        prompt="question",
+        schema=_AnswerSchema,
+        max_tokens=100,
+    )
+
+    assert result.value == "ok"
+    assert len(calls) == 2
+
+
+# --- falling back to a second model after a repeated deadline --------------
+
+
+def _stub_provider_multi(responses_by_model: dict):
+    """A GeminiProvider whose client yields per-model-id response queues in
+    order - an exception instance is raised, anything else is returned."""
+    from app.llm.gemini_provider import GeminiProvider
+
+    calls: list[str] = []
+
+    class _Models:
+        def generate_content(self, *, model, contents, config):
+            calls.append(model)
+            index = calls.count(model) - 1
+            item = responses_by_model[model][index]
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+    class _Client:
+        models = _Models()
+
+    provider = object.__new__(GeminiProvider)
+    provider._client = _Client()
+    return provider, calls
+
+
+def test_falls_back_to_a_second_model_after_the_preferred_one_times_out_twice() -> None:
+    """The bug this guards: a specific free-tier Flash model can go
+    unresponsive for an extended period while a different model on the same
+    key answers normally - failing the request outright wastes that."""
+    from types import SimpleNamespace
+
+    ok_response = SimpleNamespace(parsed=_AnswerSchema("from fallback"))
+    provider, calls = _stub_provider_multi(
+        {
+            "gemini-3.8-flash": [_deadline_exceeded(), _deadline_exceeded()],
+            "gemini-3.5-flash": [ok_response],
+        }
+    )
+
+    result = provider.generate_structured(
+        model="gemini-3.8-flash",
+        prompt="question",
+        schema=_AnswerSchema,
+        max_tokens=100,
+        fallback_model="gemini-3.5-flash",
+    )
+
+    assert result.value == "from fallback"
+    assert calls == ["gemini-3.8-flash", "gemini-3.8-flash", "gemini-3.5-flash"]
+
+
+def test_no_fallback_configured_surfaces_the_error_after_just_the_retry() -> None:
+    from app.errors import LLMUnavailable
+
+    provider, calls = _stub_provider_multi(
+        {"gemini-3.8-flash": [_deadline_exceeded(), _deadline_exceeded()]}
+    )
+
+    with pytest.raises(LLMUnavailable):
+        provider.generate_structured(
+            model="gemini-3.8-flash",
+            prompt="question",
+            schema=_AnswerSchema,
+            max_tokens=100,
+            fallback_model=None,
+        )
+
+    assert calls == ["gemini-3.8-flash", "gemini-3.8-flash"]
+
+
+def test_a_fallback_model_that_also_times_out_still_surfaces_a_clear_error() -> None:
+    from app.errors import LLMUnavailable
+
+    provider, calls = _stub_provider_multi(
+        {
+            "gemini-3.8-flash": [_deadline_exceeded(), _deadline_exceeded()],
+            "gemini-3.5-flash": [_deadline_exceeded(), _deadline_exceeded()],
+        }
+    )
+
+    with pytest.raises(LLMUnavailable):
+        provider.generate_structured(
+            model="gemini-3.8-flash",
+            prompt="question",
+            schema=_AnswerSchema,
+            max_tokens=100,
+            fallback_model="gemini-3.5-flash",
+        )
+
+    assert calls == [
+        "gemini-3.8-flash",
+        "gemini-3.8-flash",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash",
+    ]

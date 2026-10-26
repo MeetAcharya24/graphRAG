@@ -162,6 +162,7 @@ def answer_question(question: str, bundle: EvidenceBundle, provider) -> dict:
         schema=Answer,
         system=SYSTEM_PROMPT,
         max_tokens=ANSWER_MAX_TOKENS,
+        fallback_model=get_settings().answer_fallback_model or None,
     )
 
     sources, dropped_chunks = resolve_chunk_citations(parsed.used_chunk_ids, bundle)
