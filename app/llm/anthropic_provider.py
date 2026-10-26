@@ -6,6 +6,8 @@ without touching code. Nothing imports this module unless that is set.
 
 from __future__ import annotations
 
+import time
+
 import anthropic
 
 from app.config import LLM_TIMEOUT_SECONDS
@@ -124,7 +126,10 @@ class AnthropicProvider:
         max_tokens: int,
         minimal_reasoning: bool = False,
         fallback_model: str | None = None,  # noqa: ARG002 - not wired up for Anthropic
+        telemetry: dict | None = None,
     ) -> SchemaT:
+        start = time.monotonic()
+
         def attempt() -> SchemaT:
             kwargs = {
                 "model": model,
@@ -159,4 +164,8 @@ class AnthropicProvider:
                 hint="The response may have been truncated by max_tokens.",
             )
 
-        return with_retry(attempt, description=f"{model} structured generation")
+        result = with_retry(attempt, description=f"{model} structured generation")
+        if telemetry is not None:
+            telemetry["model_used"] = model
+            telemetry["total_elapsed_seconds"] = round(time.monotonic() - start, 2)
+        return result

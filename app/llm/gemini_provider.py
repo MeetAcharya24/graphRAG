@@ -15,6 +15,7 @@ from google.genai import types
 from app.config import (
     ANSWER_THINKING_BUDGET,
     ANSWER_TIMEOUT_SECONDS,
+    ANSWER_TOTAL_BUDGET_SECONDS,
     EXTRACTION_THINKING_BUDGET,
     LLM_TIMEOUT_SECONDS,
     OVERLOAD_RETRY_BACKOFF_SECONDS,
@@ -388,13 +389,26 @@ class GeminiProvider:
         max_tokens: int,
         minimal_reasoning: bool = False,
         fallback_model: str | None = None,
+        telemetry: dict | None = None,
     ) -> SchemaT:
+        overall_start = time.monotonic()
+        # The total wall-clock ceiling for this whole call (primary + its
+        # retry + fallback + its retry) - answer calls only. Extraction has
+        # no fallback and already uses the client-level default timeout, so
+        # a budget here would only complicate it for no benefit.
+        deadline = None if minimal_reasoning else overall_start + ANSWER_TOTAL_BUDGET_SECONDS
+        used_model = model
+
+        def time_left() -> float | None:
+            return None if deadline is None else deadline - time.monotonic()
+
         def call(limit_thinking: bool, model_id: str) -> SchemaT:
             """One API call. Raises _ThinkingUnsupported for a 400 that names
             the thinking budget, so the caller can retry without it, and
-            _DeadlineExceeded for Gemini's own server-side timeout (or a bare
-            client-side socket timeout - see `_is_deadline_exceeded`), so the
-            caller can retry once."""
+            _DeadlineExceeded/_ModelOverloaded for the retryable cases - see
+            `_is_deadline_exceeded`/`_is_overloaded` - so the caller can
+            retry once."""
+            nonlocal used_model
             config = types.GenerateContentConfig(
                 system_instruction=system,
                 response_mime_type="application/json",
@@ -412,16 +426,21 @@ class GeminiProvider:
                 # thinking was confirmed as the cause of a free-tier deadline
                 # (live-diagnosed: budget=0 hit the same deadline as an
                 # uncapped call, so the model being temporarily overloaded was
-                # the actual cause that day, not reasoning length). Paired
-                # with an explicit timeout shorter than the SDK's hours-long
-                # default but long enough to give a slow free-tier call a
-                # fair shot before the single retry below.
+                # the actual cause that day, not reasoning length).
                 thinking_budget = ANSWER_THINKING_BUDGET
                 config.thinking_config = types.ThinkingConfig(
                     thinking_budget=thinking_budget
                 )
+                # Each attempt's own timeout shrinks to whatever remains of
+                # the total budget, so a late retry/fallback gets an honest
+                # deadline instead of a fresh ANSWER_TIMEOUT_SECONDS every
+                # time - the whole point of capping the total.
+                per_call_timeout = ANSWER_TIMEOUT_SECONDS
+                remaining = time_left()
+                if remaining is not None:
+                    per_call_timeout = max(1.0, min(ANSWER_TIMEOUT_SECONDS, remaining))
                 config.http_options = types.HttpOptions(
-                    timeout=int(ANSWER_TIMEOUT_SECONDS * 1000)
+                    timeout=int(per_call_timeout * 1000)
                 )
             log.info(
                 "Gemini generateContent request: model=%s thinking_budget=%s "
@@ -458,6 +477,7 @@ class GeminiProvider:
                 raise translate_error(exc) from exc
             elapsed = time.monotonic() - start
             log.info("Gemini generateContent for %s took %.2fs", model_id, elapsed)
+            used_model = model_id
             return _parsed_or_raise(response, schema)
 
         def call_with_retry(limit_thinking: bool, model_id: str) -> SchemaT:
@@ -466,6 +486,9 @@ class GeminiProvider:
             waiting first would only burn more of the same deadline.
             Overload gets a short backoff first instead - hammering an
             already-overloaded model again immediately is unlikely to help.
+            Either way, skipped once the total budget is already spent, so
+            the caller's fallback decision sees the original failure rather
+            than waiting for a retry that was never going to fit.
 
             Lets a second _RetryableFailure propagate (rather than
             translating it here) so the caller can decide whether to fall
@@ -473,10 +496,15 @@ class GeminiProvider:
             try:
                 return call(limit_thinking, model_id)
             except _ModelOverloaded as exc:
+                remaining = time_left()
+                if remaining is not None and remaining <= 0:
+                    raise
                 backoff = min(
                     exc.retry_after or OVERLOAD_RETRY_BACKOFF_SECONDS,
                     OVERLOAD_RETRY_MAX_BACKOFF_SECONDS,
                 )
+                if remaining is not None:
+                    backoff = min(backoff, max(0.0, remaining))
                 log.warning(
                     "Gemini model %s is overloaded; backing off %.1fs and retrying once.",
                     model_id,
@@ -485,6 +513,9 @@ class GeminiProvider:
                 time.sleep(backoff)
                 return call(limit_thinking, model_id)
             except _DeadlineExceeded:
+                remaining = time_left()
+                if remaining is not None and remaining <= 0:
+                    raise
                 log.warning(
                     "Gemini call for %s hit its own deadline; retrying once.", model_id
                 )
@@ -512,6 +543,15 @@ class GeminiProvider:
             except _RetryableFailure as exc:
                 if not fallback_model or fallback_model == model:
                     raise translate_error(exc.__cause__) from exc
+                remaining = time_left()
+                if remaining is not None and remaining <= 0:
+                    log.warning(
+                        "Gemini model %s failed twice and the %.0fs answer budget "
+                        "is exhausted; not trying the fallback.",
+                        model,
+                        ANSWER_TOTAL_BUDGET_SECONDS,
+                    )
+                    raise translate_error(exc.__cause__) from exc
                 log.warning(
                     "Gemini model %s failed twice in a row (%s); falling back to %s.",
                     model,
@@ -523,7 +563,11 @@ class GeminiProvider:
                 except _RetryableFailure as fallback_exc:
                     raise translate_error(fallback_exc.__cause__) from fallback_exc
 
-        return with_retry(attempt, description=f"{model} structured generation")
+        result = with_retry(attempt, description=f"{model} structured generation")
+        if telemetry is not None:
+            telemetry["model_used"] = used_model
+            telemetry["total_elapsed_seconds"] = round(time.monotonic() - overall_start, 2)
+        return result
 
 
 def _parsed_or_raise(response, schema: type[SchemaT]) -> SchemaT:

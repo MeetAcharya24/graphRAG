@@ -696,3 +696,99 @@ def test_a_daily_quota_error_still_never_retries_or_falls_back() -> None:
         )
 
     assert calls == ["gemini-3.8-flash"]
+
+
+# --- the total answer budget caps retries AND the fallback -----------------
+
+
+def test_the_fallback_is_skipped_once_the_total_answer_budget_is_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bug this guards: a refusal ("insufficient evidence") took ~5
+    minutes because every attempt - primary, its retry, the fallback, its
+    retry - got its own fresh ANSWER_TIMEOUT_SECONDS. With the budget
+    already spent, neither the retry nor the fallback should even start."""
+    from app.llm import gemini_provider
+    from app.errors import LLMUnavailable
+
+    monkeypatch.setattr(gemini_provider, "ANSWER_TOTAL_BUDGET_SECONDS", 0.0)
+
+    provider, calls = _stub_provider_multi(
+        {"gemini-3.8-flash": [_deadline_exceeded()]}
+    )
+
+    with pytest.raises(LLMUnavailable):
+        provider.generate_structured(
+            model="gemini-3.8-flash",
+            prompt="question",
+            schema=_AnswerSchema,
+            max_tokens=100,
+            fallback_model="gemini-3.5-flash",
+        )
+
+    # One call, full stop: no same-model retry, no fallback attempt either.
+    assert calls == ["gemini-3.8-flash"]
+
+
+def test_a_healthy_call_still_gets_the_full_budget() -> None:
+    """The budget must not clip a call that was never going to need it."""
+    from types import SimpleNamespace
+
+    ok_response = SimpleNamespace(parsed=_AnswerSchema("ok"))
+    provider, calls = _stub_provider([ok_response])
+
+    result = provider.generate_structured(
+        model="gemini-3.8-flash",
+        prompt="question",
+        schema=_AnswerSchema,
+        max_tokens=100,
+    )
+
+    assert result.value == "ok"
+    assert len(calls) == 1
+
+
+# --- telemetry: which model answered, and how long it took -----------------
+
+
+def test_telemetry_records_the_model_that_answered_and_the_elapsed_time() -> None:
+    from types import SimpleNamespace
+
+    ok_response = SimpleNamespace(parsed=_AnswerSchema("ok"))
+    provider, _calls = _stub_provider([ok_response])
+    telemetry: dict = {}
+
+    provider.generate_structured(
+        model="gemini-3.8-flash",
+        prompt="question",
+        schema=_AnswerSchema,
+        max_tokens=100,
+        telemetry=telemetry,
+    )
+
+    assert telemetry["model_used"] == "gemini-3.8-flash"
+    assert telemetry["total_elapsed_seconds"] >= 0.0
+
+
+def test_telemetry_records_the_fallback_model_when_that_is_what_answered() -> None:
+    from types import SimpleNamespace
+
+    ok_response = SimpleNamespace(parsed=_AnswerSchema("from fallback"))
+    provider, _calls = _stub_provider_multi(
+        {
+            "gemini-3.8-flash": [_deadline_exceeded(), _deadline_exceeded()],
+            "gemini-3.5-flash": [ok_response],
+        }
+    )
+    telemetry: dict = {}
+
+    provider.generate_structured(
+        model="gemini-3.8-flash",
+        prompt="question",
+        schema=_AnswerSchema,
+        max_tokens=100,
+        fallback_model="gemini-3.5-flash",
+        telemetry=telemetry,
+    )
+
+    assert telemetry["model_used"] == "gemini-3.5-flash"

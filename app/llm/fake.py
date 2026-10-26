@@ -42,6 +42,7 @@ class FakeLLM:
         max_tokens: int,
         minimal_reasoning: bool = False,
         fallback_model: str | None = None,
+        telemetry: dict | None = None,
     ) -> SchemaT:
         self.calls.append(
             {
@@ -54,6 +55,9 @@ class FakeLLM:
                 "fallback_model": fallback_model,
             }
         )
+        if telemetry is not None:
+            telemetry["model_used"] = model
+            telemetry["total_elapsed_seconds"] = 0.0
 
         if not self._responses:
             try:

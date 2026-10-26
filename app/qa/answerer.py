@@ -146,7 +146,12 @@ def render_paths(verified_edge_ids: Sequence[str], bundle: EvidenceBundle) -> li
 
 
 def answer_question(question: str, bundle: EvidenceBundle, provider) -> dict:
-    """Answer from the bundle, or say plainly that there is none - no LLM call either way."""
+    """Answer from the bundle, or say plainly that there is none - no LLM call either way.
+
+    `model_used`/`elapsed_seconds` are always present so a caller never has
+    to guess which model answered or how long it took - including for the
+    no-LLM-call fast path below, where they are `None`/`0.0`.
+    """
     if not bundle.chunks:
         return {
             "answer": "I don't have information about that.",
@@ -154,8 +159,11 @@ def answer_question(question: str, bundle: EvidenceBundle, provider) -> dict:
             "sources": [],
             "paths": [],
             "insufficient_evidence": True,
+            "model_used": None,
+            "elapsed_seconds": 0.0,
         }
 
+    telemetry: dict = {}
     parsed = provider.generate_structured(
         model=get_settings().answer_model,
         prompt=build_prompt(question, bundle),
@@ -163,7 +171,11 @@ def answer_question(question: str, bundle: EvidenceBundle, provider) -> dict:
         system=SYSTEM_PROMPT,
         max_tokens=ANSWER_MAX_TOKENS,
         fallback_model=get_settings().answer_fallback_model or None,
+        telemetry=telemetry,
     )
+    model_used = telemetry.get("model_used", get_settings().answer_model)
+    elapsed_seconds = telemetry.get("total_elapsed_seconds", 0.0)
+    log.info("Answer served by %s in %.2fs", model_used, elapsed_seconds)
 
     sources, dropped_chunks = resolve_chunk_citations(parsed.used_chunk_ids, bundle)
     verified_edges, dropped_edges = resolve_edge_citations(parsed.used_edge_ids, bundle)
@@ -188,4 +200,6 @@ def answer_question(question: str, bundle: EvidenceBundle, provider) -> dict:
         "sources": sources,
         "paths": render_paths(verified_edges, bundle),
         "insufficient_evidence": insufficient_evidence,
+        "model_used": model_used,
+        "elapsed_seconds": elapsed_seconds,
     }

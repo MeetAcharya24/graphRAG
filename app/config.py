@@ -109,6 +109,17 @@ ANSWER_THINKING_BUDGET = 4096
 OVERLOAD_RETRY_BACKOFF_SECONDS = 5.0
 OVERLOAD_RETRY_MAX_BACKOFF_SECONDS = 30.0
 
+# The hard ceiling on wall-clock time for one /api/ask answer call, across
+# every attempt: the primary model, its retry, the fallback model, and its
+# retry. Without this, a genuinely unreliable primary can chain up to four
+# ANSWER_TIMEOUT_SECONDS-long attempts (~6 minutes) before giving up - far
+# too slow for what is often a refusal ("the documents do not cover that"),
+# which should be one of the FASTEST paths, not the slowest. Each attempt's
+# own timeout shrinks to whatever budget remains, so a late attempt gets a
+# short, honest deadline instead of a fresh full one; once the budget is
+# gone, no further attempt (retry or fallback) is started at all.
+ANSWER_TOTAL_BUDGET_SECONDS = 60.0
+
 # Free-tier friendly: 2 concurrent extraction calls, not 5. A free Gemini key
 # has a low requests-per-minute ceiling, and going wider just trips 429s.
 EXTRACTION_CONCURRENCY = 2

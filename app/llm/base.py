@@ -126,6 +126,7 @@ class LLMProvider(Protocol):
         max_tokens: int,
         minimal_reasoning: bool = False,
         fallback_model: str | None = None,
+        telemetry: dict | None = None,
     ) -> SchemaT:
         """Return a validated instance of `schema`.
 
@@ -136,5 +137,10 @@ class LLMProvider(Protocol):
         times out twice in a row (original attempt + its one retry) - a free
         tier model can go temporarily unresponsive while a different one on
         the same key answers normally.
+
+        `telemetry`, when given a dict, is filled in with `model_used` (the
+        model id that actually produced the result - `model` or
+        `fallback_model`) and `total_elapsed_seconds`, so a caller can log or
+        surface which model answered and how long it took without guessing.
         """
         ...
