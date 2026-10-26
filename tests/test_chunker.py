@@ -67,6 +67,22 @@ def test_chunk_ids_are_unique() -> None:
     assert len({c.chunk_id for c in chunks}) == len(chunks)
 
 
+def test_every_chunk_carries_the_source_filename() -> None:
+    """The bug this guards: source cards showed a raw chunk id because
+    nothing threaded the original filename this far."""
+    chunks = chunk_text(_long_single_paragraph(3000), doc_id="deadbeef", filename="deal.pdf")
+
+    assert chunks
+    for chunk in chunks:
+        assert chunk.filename == "deal.pdf"
+
+
+def test_filename_defaults_to_empty_when_not_given() -> None:
+    chunks = chunk_text("Hello world.", doc_id="deadbeef")
+
+    assert chunks[0].filename == ""
+
+
 def test_chunking_is_deterministic() -> None:
     """Journey 4: the same document must always chunk identically."""
     text = _long_single_paragraph(4000)

@@ -106,6 +106,21 @@ def test_valid_chunk_and_edge_ids_render_correctly() -> None:
     assert result["insufficient_evidence"] is False
 
 
+def test_sources_carry_the_filename_not_just_the_chunk_id() -> None:
+    """The bug this guards: source cards showed a raw chunk id because the
+    API response never carried the original filename at all."""
+    named_chunk = ACQUISITION_CHUNK.model_copy(update={"filename": "acquisition.pdf"})
+    provider = FakeLLM(
+        [Answer(answer="x", used_chunk_ids=["deal:0"], confidence=0.5)]
+    )
+
+    result = answer_question(
+        "q", _bundle(chunks=(named_chunk, HIRE_CHUNK)), provider
+    )
+
+    assert result["sources"][0]["filename"] == "acquisition.pdf"
+
+
 def test_a_fabricated_chunk_id_is_stripped_and_logged(caplog) -> None:
     provider = FakeLLM(
         [Answer(answer="x", used_chunk_ids=["deal:0", "made-up:7"], confidence=0.5)]

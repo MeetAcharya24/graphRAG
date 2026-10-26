@@ -29,7 +29,7 @@ _OVERLAP_RESERVE = CHUNK_OVERLAP_CHARS + 1
 _BODY_LIMIT = CHUNK_TARGET_CHARS - _OVERLAP_RESERVE
 
 
-def chunk_text(text: str, doc_id: str) -> list[Chunk]:
+def chunk_text(text: str, doc_id: str, filename: str = "") -> list[Chunk]:
     """Split `text` into chunks, in order.
 
     Returns an empty list for text that holds no words.
@@ -41,7 +41,13 @@ def chunk_text(text: str, doc_id: str) -> list[Chunk]:
     bodies = _pack(pieces)
     bodies = _merge_tiny_tail(bodies)
     return [
-        Chunk(chunk_id=f"{doc_id}:{index}", doc_id=doc_id, index=index, text=body)
+        Chunk(
+            chunk_id=f"{doc_id}:{index}",
+            doc_id=doc_id,
+            index=index,
+            text=body,
+            filename=filename,
+        )
         for index, body in enumerate(bodies)
     ]
 

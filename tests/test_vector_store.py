@@ -181,6 +181,21 @@ def test_chunks_can_be_fetched_by_id(store, embedder) -> None:
     assert {c.chunk_id for c in fetched} == {"doc1:0", "doc1:2"}
 
 
+def test_the_filename_round_trips_through_add_and_get_by_ids(store, embedder) -> None:
+    """The bug this guards: Neo4jVectorStore.add built its row dict without a
+    `filename` key at all, so every chunk's filename silently came back
+    empty regardless of what was passed in - source cards showed a raw
+    chunk id because there was nothing else to show."""
+    chunks = [
+        Chunk(chunk_id="doc1:0", doc_id="doc1", index=0, text="alpha", filename="deal.pdf")
+    ]
+    store.add(chunks, embedder.embed_documents([c.text for c in chunks]))
+
+    fetched = store.get_by_ids(["doc1:0"])
+
+    assert fetched[0].filename == "deal.pdf"
+
+
 def test_unknown_ids_are_skipped_rather_than_raising(store, embedder) -> None:
     """Phase 7 validates LLM-supplied ids, so unknown ones are expected."""
     _add(store, embedder, "doc1", ["alpha"])

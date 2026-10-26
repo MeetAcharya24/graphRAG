@@ -32,6 +32,9 @@ class Chunk(_Frozen):
     doc_id: str
     index: int = Field(ge=0)
     text: str
+    filename: str = Field(
+        default="", description="The uploaded document's original filename."
+    )
 
 
 class JobStatus(_Frozen):
@@ -55,7 +58,7 @@ class JobStatus(_Frozen):
 
 
 class Entity(_Frozen):
-    """A person, organisation, product, place, event or concept.
+    """A person, organisation, product, service, technology, place, event or concept.
 
     `entity_id` is `TYPE:normalised name`, so the same thing written two ways
     collapses to one node while `Apple` the company stays distinct from `Apple`
@@ -116,6 +119,7 @@ class EvidenceChunk(_Frozen):
     doc_id: str
     text: str
     score: float
+    filename: str = ""
 
 
 class EvidenceBundle(_Frozen):

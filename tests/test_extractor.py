@@ -71,6 +71,8 @@ def test_the_entity_vocabulary_is_closed() -> None:
         "PERSON",
         "ORG",
         "PRODUCT",
+        "SERVICE",
+        "TECHNOLOGY",
         "LOCATION",
         "EVENT",
         "CONCEPT",
@@ -82,6 +84,17 @@ def test_the_relation_vocabulary_has_an_escape_hatch() -> None:
     assert "OTHER" in RELATION_TYPES
     assert "works_at" in RELATION_TYPES
     assert "acquired_by" in RELATION_TYPES
+
+
+def test_agency_client_relation_types_are_available() -> None:
+    """Client work has somewhere specific to go, instead of being forced
+    into `produces`/`collaborates_with` (the live bug this guards: a client
+    receiving a service was extracted as "Agency09 produces BITS Pilani")."""
+    assert "built" in RELATION_TYPES
+    assert "delivered_service_to" in RELATION_TYPES
+    assert "used_technology" in RELATION_TYPES
+    assert "SERVICE" in ENTITY_TYPES
+    assert "TECHNOLOGY" in ENTITY_TYPES
 
 
 def test_an_unknown_entity_type_is_rejected_by_the_schema() -> None:
@@ -160,6 +173,49 @@ def test_a_relation_is_attributed_to_the_chunk_it_names() -> None:
     assert by_type["works_at"].source_chunk_id == "doc1:0"
     assert by_type["acquired_by"].source_chunk_id == "doc1:1"
     assert len(entities) == 3
+
+
+def test_a_shared_service_resolves_to_its_own_entity_not_a_client_edge() -> None:
+    """The scenario `produces`/`collaborates_with` used to mangle: a service
+    delivered to two different clients should resolve as ORG--built-->SERVICE
+    and SERVICE--delivered_service_to-->ORG twice, giving the two clients a
+    real two-hop link through the service - not through the agency."""
+    delivery = (
+        "Agency09 built CMS Implementation and delivered it to BITS Pilani "
+        "and Ryan Group."
+    )
+    chunks = _chunks([delivery])
+    result = _result(
+        entities=[
+            _entity("Agency09", "ORG", 0),
+            _entity("CMS Implementation", "SERVICE", 0),
+            _entity("BITS Pilani", "ORG", 0),
+            _entity("Ryan Group", "ORG", 0),
+        ],
+        relations=[
+            _relation(
+                "Agency09", "CMS Implementation", "built", index=0,
+                source_type="ORG", target_type="SERVICE",
+            ),
+            _relation(
+                "CMS Implementation", "BITS Pilani", "delivered_service_to", index=0,
+                source_type="SERVICE", target_type="ORG",
+            ),
+            _relation(
+                "CMS Implementation", "Ryan Group", "delivered_service_to", index=0,
+                source_type="SERVICE", target_type="ORG",
+            ),
+        ],
+    )
+
+    entities, relations = resolve_extraction(result, chunks)
+
+    types_by_name = {e.name: e.type for e in entities}
+    assert types_by_name["CMS Implementation"] == "SERVICE"
+    rel_types = {r.type for r in relations}
+    assert rel_types == {"built", "delivered_service_to"}
+    assert "produces" not in rel_types
+    assert "collaborates_with" not in rel_types
 
 
 def test_an_out_of_range_chunk_index_is_dropped() -> None:

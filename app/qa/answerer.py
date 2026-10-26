@@ -105,7 +105,12 @@ def resolve_chunk_citations(
         seen.add(chunk_id)
         chunk = chunk_by_id[chunk_id]
         resolved.append(
-            {"doc_id": chunk.doc_id, "chunk_id": chunk.chunk_id, "excerpt": chunk.text[:300]}
+            {
+                "doc_id": chunk.doc_id,
+                "chunk_id": chunk.chunk_id,
+                "excerpt": chunk.text[:300],
+                "filename": chunk.filename,
+            }
         )
     return resolved, dropped
 

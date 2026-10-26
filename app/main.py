@@ -383,7 +383,7 @@ async def upload_document(request: Request, file: UploadFile = File(...)) -> dic
 
     data = await file.read()
     document = load_document(file.filename or "", data)
-    chunks = chunk_text(document.text, doc_id=document.doc_id)
+    chunks = chunk_text(document.text, doc_id=document.doc_id, filename=document.filename)
 
     if len(chunks) > MAX_CHUNK_COUNT:
         raise TooManyChunks(

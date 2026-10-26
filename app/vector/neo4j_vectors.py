@@ -33,6 +33,10 @@ def _chunk_from_record(record) -> Chunk:
         doc_id=record["doc_id"],
         index=record["index"],
         text=record["text"],
+        # A chunk written before this property existed has no `filename` at
+        # all, not an empty string - record.get(...) would give None, which
+        # the schema's str field rejects.
+        filename=record.get("filename") or "",
     )
 
 
@@ -66,6 +70,7 @@ class Neo4jVectorStore:
                 "index": chunk.index,
                 "text": chunk.text,
                 "embedding": [float(value) for value in vector],
+                "filename": chunk.filename,
             }
             for chunk, vector in zip(chunks, vectors)
         ]

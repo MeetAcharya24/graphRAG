@@ -289,3 +289,85 @@ def test_shortest_path_boosting_recovers_a_path_excluded_by_degree_caps() -> Non
     assert paths[0].hops == 3
     assert "r1" in edges and "r2" in edges
     assert entities["helios"].entity_id in nodes
+
+
+# --- hub-only paths are dropped, real connectors are not --------------------
+
+
+def test_a_path_whose_only_connection_is_a_hub_is_dropped() -> None:
+    """The live bug this guards: an agency entity mentioned in nearly every
+    chunk makes every pair of clients look connected, flooding the rendered
+    paths with joins that prove nothing beyond "both mention the agency"."""
+    from app.graph.retrieval import _boost_shortest_paths
+
+    store = InMemoryGraphStore()
+    hub = _entity("Agency09", "ORG")
+    client_a = _entity("Client A", "ORG")
+    client_b = _entity("Client B", "ORG")
+    for entity in (hub, client_a, client_b):
+        store.upsert_entity(entity)
+
+    store.upsert_relation(_relation("r-a", hub, client_a, "delivered_service_to"))
+    store.upsert_relation(_relation("r-b", hub, client_b, "delivered_service_to"))
+    # Push the hub's degree over MAX_ENTITY_DEGREE with unrelated decoys -
+    # exactly what an entity mentioned in nearly every chunk looks like.
+    for i in range(MAX_ENTITY_DEGREE + 5):
+        decoy = _entity(f"Decoy {i}", "CONCEPT")
+        store.upsert_entity(decoy)
+        store.upsert_relation(_relation(f"d{i:04d}", hub, decoy, chunk_id=f"d:{i}"))
+
+    seed_ids = [client_a.entity_id, client_b.entity_id]
+    nodes, edges = expand_subgraph(seed_ids, store)
+    paths = _boost_shortest_paths(seed_ids, store, nodes, edges)
+
+    assert paths == []
+
+
+def test_a_path_through_a_real_non_hub_connector_is_kept() -> None:
+    """The positive case: a shared SERVICE, not a mega-hub, is a genuine
+    multi-hop link and must still render."""
+    from app.graph.retrieval import _boost_shortest_paths
+
+    store = InMemoryGraphStore()
+    service = _entity("CMS Implementation", "SERVICE")
+    client_a = _entity("BITS Pilani", "ORG")
+    client_b = _entity("Ryan Group", "ORG")
+    for entity in (service, client_a, client_b):
+        store.upsert_entity(entity)
+
+    store.upsert_relation(_relation("r-a", service, client_a, "delivered_service_to"))
+    store.upsert_relation(_relation("r-b", service, client_b, "delivered_service_to"))
+
+    seed_ids = [client_a.entity_id, client_b.entity_id]
+    nodes, edges = expand_subgraph(seed_ids, store)
+    paths = _boost_shortest_paths(seed_ids, store, nodes, edges)
+
+    assert len(paths) == 1
+    assert paths[0].hops == 2
+
+
+def test_a_path_that_is_a_superset_of_a_shorter_one_is_deduped() -> None:
+    """X-Y and Y-Z are each a direct edge; X-Z's only path goes through Y, so
+    its node set {X, Y, Z} is a strict superset of both shorter ones already
+    shown and should not also be rendered."""
+    from app.graph.retrieval import _boost_shortest_paths
+
+    store = InMemoryGraphStore()
+    x = _entity("X", "ORG")
+    y = _entity("Y", "ORG")
+    z = _entity("Z", "ORG")
+    for entity in (x, y, z):
+        store.upsert_entity(entity)
+
+    store.upsert_relation(_relation("r-xy", x, y, "RELATED"))
+    store.upsert_relation(_relation("r-yz", y, z, "RELATED"))
+
+    seed_ids = [x.entity_id, y.entity_id, z.entity_id]
+    nodes, edges = expand_subgraph(seed_ids, store)
+    paths = _boost_shortest_paths(seed_ids, store, nodes, edges)
+
+    node_sets = [{n.entity_id for n in path.nodes} for path in paths]
+    assert {x.entity_id, y.entity_id} in node_sets
+    assert {y.entity_id, z.entity_id} in node_sets
+    assert {x.entity_id, y.entity_id, z.entity_id} not in node_sets
+    assert len(paths) == 2

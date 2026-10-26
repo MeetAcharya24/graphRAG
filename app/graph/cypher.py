@@ -205,11 +205,13 @@ RETURN [n IN nodes(path) | n] AS path_nodes,
 UPSERT_CHUNKS = """
 UNWIND $rows AS row
 MERGE (d:Document {doc_id: row.doc_id})
+SET d.filename = row.filename
 MERGE (c:Chunk {chunk_id: row.chunk_id})
 SET c.doc_id = row.doc_id,
     c.index = row.index,
     c.text = row.text,
-    c.embedding = row.embedding
+    c.embedding = row.embedding,
+    c.filename = row.filename
 MERGE (c)-[:PART_OF]->(d)
 """
 
@@ -220,12 +222,14 @@ RETURN node.chunk_id AS chunk_id,
        node.doc_id AS doc_id,
        node.index AS index,
        node.text AS text,
+       node.filename AS filename,
        score
 """
 
 GET_CHUNKS_BY_IDS = """
 MATCH (c:Chunk) WHERE c.chunk_id IN $chunk_ids
-RETURN c.chunk_id AS chunk_id, c.doc_id AS doc_id, c.index AS index, c.text AS text
+RETURN c.chunk_id AS chunk_id, c.doc_id AS doc_id, c.index AS index, c.text AS text,
+       c.filename AS filename
 """
 
 DELETE_DOCUMENT = """

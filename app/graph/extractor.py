@@ -31,7 +31,26 @@ log = get_logger(__name__)
 
 # Closed vocabularies. An open one makes the graph unqueryable: `works_at`,
 # `employed_by` and `is_employed_at` would be three different edges.
-ENTITY_TYPES = ("PERSON", "ORG", "PRODUCT", "LOCATION", "EVENT", "CONCEPT")
+#
+# SERVICE and TECHNOLOGY exist so agency/client work has somewhere to land:
+# without them, "Agency09 delivered Mobile App Development to BITS Pilani"
+# has no entity for the service itself, and the model is left trying to wedge
+# that fact into a direct Agency-to-client edge - observed live as the
+# nonsensical "Agency09 produces BITS Pilani" (a client is not a product).
+# With SERVICE/TECHNOLOGY entities, the same fact becomes two edges
+# (Agency09 --built--> Mobile App Development, Mobile App Development
+# --delivered_service_to--> BITS Pilani), and two clients sharing one service
+# are now a real two-hop link through that service - not through Agency09.
+ENTITY_TYPES = (
+    "PERSON",
+    "ORG",
+    "PRODUCT",
+    "SERVICE",
+    "TECHNOLOGY",
+    "LOCATION",
+    "EVENT",
+    "CONCEPT",
+)
 
 RELATION_TYPES = (
     "works_at",
@@ -45,12 +64,21 @@ RELATION_TYPES = (
     "collaborates_with",
     "competes_with",
     "mentions",
+    # Agency/client/vendor work: see the ENTITY_TYPES note above. Kept
+    # distinct from produces/collaborates_with, which are for an
+    # organization's own output or a peer-to-peer partnership, not a
+    # service rendered to a client.
+    "built",
+    "delivered_service_to",
+    "used_technology",
     # The escape hatch: a real relationship that fits nothing above is kept
     # rather than discarded, with its own wording in `label`.
     "OTHER",
 )
 
-EntityType = Literal["PERSON", "ORG", "PRODUCT", "LOCATION", "EVENT", "CONCEPT"]
+EntityType = Literal[
+    "PERSON", "ORG", "PRODUCT", "SERVICE", "TECHNOLOGY", "LOCATION", "EVENT", "CONCEPT"
+]
 
 
 class ExtractedEntity(BaseModel):
@@ -175,6 +203,17 @@ Rules:
 - Use ONLY these relationship types: {", ".join(RELATION_TYPES)}
   If a real relationship fits none of them, use OTHER and put your own wording
   in `label`. Never invent a new type.
+- Agency/client/vendor work: a named offering (an implementation, a platform,
+  an app, a campaign) is its own SERVICE entity, and a named tool, platform or
+  language it was built with is its own TECHNOLOGY entity - never fold either
+  into the organization that made or used it.
+  - ORG `built` SERVICE - the organization that created or delivered it.
+  - SERVICE `delivered_service_to` ORG - the client it was delivered to.
+  - ORG `used_technology` TECHNOLOGY - a technology an org built with or adopted.
+  A client receiving work is never `produces`, and a vendor relationship is
+  never `collaborates_with` - those are for an organization's own output and
+  for a peer-to-peer partnership between equals, not a service rendered to a
+  client.
 - Every entity and every relationship MUST set source_chunk_index to the number
   of the chunk it came from, exactly as labelled in the prompt. This is how the
   fact is traced back to its text, so a wrong number is worse than omitting the

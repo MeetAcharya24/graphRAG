@@ -346,7 +346,11 @@ function renderSources(sources) {
     const preview = card.querySelector(".source-excerpt-preview");
     const full = card.querySelector(".source-excerpt-full");
 
-    card.querySelector(".source-file").textContent = `${source.doc_id} · ${source.chunk_id}`;
+    const chunkIndex = Number(source.chunk_id.split(":").pop());
+    const label = source.filename || source.doc_id;
+    card.querySelector(".source-file").textContent = Number.isInteger(chunkIndex)
+      ? `${label} · chunk ${chunkIndex + 1}`
+      : label;
     preview.textContent = truncate(source.excerpt, 90);
     full.textContent = source.excerpt;
 

@@ -13,9 +13,15 @@ scores each edge `confidence * hop_decay[hop]`. The subgraph is capped at
 `MAX_ENTITY_DEGREE` before they are followed, so a hub entity like
 `LOCATION:USA` cannot pull in most of the graph on its own.
 
-Shortest paths between every pair of seeds are boosted afterwards and merged
-in regardless of those caps: they are the multi-hop answer (R5), and pruning
-the one path that proves a 3-hop question would defeat the whole feature.
+Shortest paths between every pair of seeds are boosted afterwards and their
+edges merged in regardless of those caps: they are the multi-hop answer (R5),
+and pruning the one path that proves a 3-hop question would defeat the whole
+feature. The *rendered* path list is filtered more narrowly, though: a path
+whose only connecting nodes are themselves over `MAX_ENTITY_DEGREE` (an
+entity like the agency in every chunk of an agency/client document) proves
+nothing beyond "both ends mention the hub," so it is dropped, and a path that
+is a strict superset of a shorter one already kept is dropped too - it adds
+hops without adding information.
 """
 
 from __future__ import annotations
@@ -165,6 +171,62 @@ def expand_subgraph(
     return nodes, edges
 
 
+def _is_hub(entity_id: str, store: GraphStore, degree_cache: dict[str, int]) -> bool:
+    """True when `entity_id` exceeds `MAX_ENTITY_DEGREE` - the same bar
+    `expand_subgraph` already enforces before following a node's edges.
+
+    Cached per `_boost_shortest_paths` call: the same hub (the agency in
+    every chunk of an agency/client document) recurs across many seed pairs.
+    """
+    if entity_id not in degree_cache:
+        degree_cache[entity_id] = len(store.relations_of(entity_id))
+    return degree_cache[entity_id] > MAX_ENTITY_DEGREE
+
+
+def _only_connects_through_a_hub(
+    path: GraphPath, store: GraphStore, degree_cache: dict[str, int]
+) -> bool:
+    """True when every node BETWEEN the two endpoints is a hub.
+
+    The textbook case: two clients whose only connecting path is via an
+    agency entity mentioned in nearly every chunk - that proves "both
+    mention the agency," not a real link between the two clients. A direct
+    edge (no intermediate node at all) is never dropped by this check, and
+    neither is a path where even one intermediate node is a real, specific
+    connector (a shared service, say) rather than a hub.
+    """
+    intermediate = path.nodes[1:-1]
+    return bool(intermediate) and all(
+        _is_hub(node.entity_id, store, degree_cache) for node in intermediate
+    )
+
+
+def _dedupe_superset_paths(paths: Sequence[GraphPath]) -> list[GraphPath]:
+    """Drop a path whose node set is a strict superset of a shorter path's.
+
+    It proves nothing the shorter path did not already - just more hops to
+    reach the same two endpoints by going through extra nodes along the way.
+    Shortest first, so only a genuinely-shorter path can absorb a longer one;
+    two different same-length paths are both kept.
+    """
+    kept: list[GraphPath] = []
+    kept_node_sets: list[set[str]] = []
+
+    for path in sorted(
+        paths, key=lambda p: (len(p.edges), tuple(n.entity_id for n in p.nodes))
+    ):
+        node_ids = {node.entity_id for node in path.nodes}
+        if any(
+            len(kept_set) < len(node_ids) and kept_set <= node_ids
+            for kept_set in kept_node_sets
+        ):
+            continue
+        kept.append(path)
+        kept_node_sets.append(node_ids)
+
+    return kept
+
+
 def _boost_shortest_paths(
     seed_ids: Sequence[str],
     store: GraphStore,
@@ -173,17 +235,22 @@ def _boost_shortest_paths(
 ) -> list[GraphPath]:
     """Shortest walks between every pair of seeds, boosted and merged in.
 
-    Mutates `nodes` and `edges` in place to include the paths found - they are
-    included regardless of the node budget and degree cap above, because a
-    path connecting two seeds is exactly the multi-hop answer (R5).
+    Mutates `nodes` and `edges` in place to include every path found's nodes
+    and edges - regardless of the node budget and degree cap above, because a
+    path connecting two seeds is exactly the multi-hop answer (R5). The
+    *returned* list is narrower: a path that only connects through a hub (see
+    `_only_connects_through_a_hub`), or that is a strict superset of a
+    shorter path already kept, is left out of what gets rendered - its edges
+    still count as evidence, just not as a path worth showing on its own.
     """
-    paths: list[GraphPath] = []
+    raw_paths: list[GraphPath] = []
+    degree_cache: dict[str, int] = {}
     ordered_seeds = sorted(set(seed_ids))
 
     for i, source in enumerate(ordered_seeds):
         for target in ordered_seeds[i + 1 :]:
             for path in store.shortest_paths(source, target, MAX_HOPS):
-                paths.append(path)
+                raw_paths.append(path)
                 for node in path.nodes:
                     nodes.setdefault(node.entity_id, node)
                 for position, relation in enumerate(path.edges, start=1):
@@ -195,7 +262,12 @@ def _boost_shortest_paths(
                             relation=relation, score=score, hop=position
                         )
 
-    return paths
+    kept_paths = [
+        path
+        for path in raw_paths
+        if not _only_connects_through_a_hub(path, store, degree_cache)
+    ]
+    return _dedupe_superset_paths(kept_paths)
 
 
 # --- assembling the evidence bundle ------------------------------------------
@@ -233,6 +305,7 @@ def _evidence_chunks(
             doc_id=chunk_by_id[cid].doc_id,
             text=chunk_by_id[cid].text,
             score=best_score[cid],
+            filename=chunk_by_id[cid].filename,
         )
         for cid in ordered_ids
     )
