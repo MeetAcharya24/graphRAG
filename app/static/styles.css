@@ -1,0 +1,471 @@
+/* GraphRAG — Phase 10 UI.
+   A private research desk read by lamplight: warm dark paper, a literary
+   serif for what the system finds, a humanist sans for the controls that
+   find it. The one accent (the "lamp") is spent on the graph-path chain,
+   primary actions, and focus states — nowhere else. */
+
+@font-face {
+  font-family: "Literata";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("fonts/literata-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Literata";
+  font-style: italic;
+  font-weight: 400 500;
+  font-display: swap;
+  src: url("fonts/literata-italic.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Work Sans";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("fonts/work-sans.woff2") format("woff2");
+}
+
+:root {
+  --paper: #16140f;
+  --paper-raised: #1d1a13;
+  --ink: #ede7d8;
+  --ink-muted: #9a9178;
+  --lamp: #d9a441;
+  --lamp-ink: #16140f;
+  --signal: #d97b6e;
+  --rule: #2e2a1f;
+  --serif: "Literata", "Iowan Old Style", Georgia, serif;
+  --sans: "Work Sans", "Segoe UI", Tahoma, sans-serif;
+  --measure: 38rem;
+  --radius: 5px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-blend-mode: overlay;
+  background-size: 140px 140px;
+  color: var(--ink);
+  font: 400 1rem/1.5 var(--sans);
+  padding: 0 1.25rem;
+}
+
+h1, h2 {
+  margin: 0;
+  font-family: var(--serif);
+  font-weight: 600;
+}
+
+p {
+  margin: 0 0 0.75rem;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+a, button, input, label {
+  font-family: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--lamp);
+  outline-offset: 2px;
+}
+
+button {
+  cursor: pointer;
+  border-radius: var(--radius);
+  border: 1px solid var(--ink-muted);
+  background: transparent;
+  color: var(--ink);
+  padding: 0.5rem 1.1rem;
+  font-size: 0.95rem;
+}
+
+button[type="submit"],
+.primary {
+  background: var(--lamp);
+  color: var(--lamp-ink);
+  border-color: var(--lamp);
+  font-weight: 600;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+input[type="text"],
+input[type="password"] {
+  background: var(--paper);
+  border: 1px solid var(--ink-muted);
+  border-radius: var(--radius);
+  color: var(--ink);
+  padding: 0.6rem 0.75rem;
+  font-size: 1rem;
+  width: 100%;
+}
+
+/* --- banners --------------------------------------------------------- */
+
+#wake-banner,
+.banner {
+  max-width: var(--measure);
+  margin: 1rem auto 0;
+  padding: 0.65rem 0.9rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--ink-muted);
+  font-size: 0.9rem;
+}
+
+.banner-danger {
+  border-color: var(--signal);
+  color: var(--signal);
+}
+
+/* --- login ------------------------------------------------------------ */
+
+#login-view {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.login-card {
+  max-width: 22rem;
+  width: 100%;
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 2rem;
+}
+
+.wordmark {
+  font-size: 1.6rem;
+}
+
+.dek {
+  color: var(--ink-muted);
+  font-size: 0.95rem;
+}
+
+.login-card label,
+.desk-section label:not(#drop-zone) {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--ink-muted);
+  margin-bottom: 0.3rem;
+}
+
+.login-card form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.field-note {
+  color: var(--signal);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+/* --- app shell ---------------------------------------------------------- */
+
+#app-view {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 2rem 0 4rem;
+}
+
+.topbar {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 1.5rem;
+}
+
+.topbar .wordmark {
+  font-size: 1.3rem;
+}
+
+.desk-section {
+  margin-bottom: 2rem;
+}
+
+.desk-section h2 {
+  font-size: 1.05rem;
+  margin-bottom: 0.4rem;
+}
+
+.hint {
+  color: var(--ink-muted);
+  font-size: 0.85rem;
+}
+
+/* --- upload -------------------------------------------------------------- */
+
+#drop-zone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  min-height: 5rem;
+  border: 1px dashed var(--ink-muted);
+  border-radius: var(--radius);
+  color: var(--ink-muted);
+  cursor: pointer;
+  padding: 1rem;
+  position: relative;
+}
+
+#drop-zone.drag-over {
+  border-color: var(--lamp);
+  color: var(--ink);
+}
+
+#drop-zone input[type="file"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+#upload-list {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.upload-row {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 0.6rem 0.8rem;
+  font-size: 0.9rem;
+}
+
+.upload-row .filename {
+  font-weight: 600;
+}
+
+.upload-row .status-line {
+  color: var(--ink-muted);
+  font-size: 0.85rem;
+  margin-top: 0.2rem;
+}
+
+.upload-row.failed .status-line {
+  color: var(--signal);
+}
+
+/* --- ask ------------------------------------------------------------- */
+
+#ask-form {
+  display: flex;
+  gap: 0.6rem;
+}
+
+#ask-form input {
+  flex: 1;
+}
+
+/* --- the casebook log --------------------------------------------------- */
+
+#log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 1.75rem;
+}
+
+.entry {
+  border-top: 1px solid var(--rule);
+  padding-top: 1.25rem;
+}
+
+.entry-question {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 1.05rem;
+  color: var(--ink);
+  margin-bottom: 0.5rem;
+}
+
+.entry-answer {
+  font-family: var(--serif);
+  font-size: 1.1rem;
+  line-height: 1.6;
+}
+
+.entry.no-evidence .entry-answer,
+.entry.entry-error .entry-answer {
+  color: var(--ink-muted);
+  font-style: italic;
+}
+
+.entry.entry-error .entry-answer {
+  color: var(--signal);
+}
+
+.confidence-note {
+  color: var(--ink-muted);
+  font-size: 0.85rem;
+  margin: 0.4rem 0 0.9rem;
+}
+
+/* --- the graph path: the signature element --------------------------- */
+
+.path-chain {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 0.75rem 0.85rem;
+  margin: 0.5rem 0 1rem;
+}
+
+.path-pill {
+  border: 1px solid var(--lamp);
+  border-radius: 999px;
+  padding: 0.25rem 0.75rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--ink);
+  background: var(--paper);
+  box-shadow: 0 0 10px rgba(217, 164, 65, 0.35);
+  white-space: nowrap;
+}
+
+.path-connector {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+  font-style: italic;
+}
+
+.path-connector::before {
+  content: "";
+  display: inline-block;
+  width: 1.1rem;
+  height: 1px;
+  background: var(--lamp);
+}
+
+.path-connector::after {
+  content: "";
+  display: inline-block;
+  width: 0;
+  height: 0;
+  border-top: 3px solid transparent;
+  border-bottom: 3px solid transparent;
+  border-left: 5px solid var(--lamp);
+}
+
+/* --- sources ----------------------------------------------------------- */
+
+.source-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.source-card {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
+.source-toggle {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 0.6rem 0.8rem;
+}
+
+.source-file {
+  font-size: 0.8rem;
+  color: var(--ink-muted);
+}
+
+.source-excerpt-preview,
+.source-excerpt-full {
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.source-excerpt-full {
+  padding: 0 0.8rem 0.7rem;
+}
+
+/* --- motion, respected ------------------------------------------------- */
+
+@media (prefers-reduced-motion: no-preference) {
+  .path-pill {
+    animation: pill-in 0.3s ease-out backwards;
+  }
+
+  @keyframes pill-in {
+    from {
+      opacity: 0;
+      transform: translateY(2px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+/* --- small screens ------------------------------------------------------ */
+
+@media (max-width: 420px) {
+  #app-view {
+    padding-top: 1.25rem;
+  }
+
+  #ask-form {
+    flex-direction: column;
+  }
+
+  .login-card {
+    padding: 1.5rem;
+  }
+}

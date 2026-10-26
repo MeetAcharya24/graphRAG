@@ -2,13 +2,74 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>GraphRAG</title>
-<style>
-  body { font: 16px/1.5 system-ui, sans-serif; margin: 0; padding: 3rem 1rem; }
-  main { max-width: 42rem; margin: 0 auto; }
-  code { background: rgba(127,127,127,.15); padding: .15em .4em; border-radius: 4px; }
-</style>
-<main>
-  <h1>GraphRAG</h1>
-  <p>Backend is running. The real interface arrives in Phase 8.</p>
-  <p>Health check: <a href="/api/health"><code>/api/health</code></a></p>
-</main>
+<link rel="stylesheet" href="styles.css">
+
+<div id="wake-banner" role="status" hidden>
+  Waking up the server &mdash; this can take up to a minute on the free tier.
+</div>
+
+<section id="login-view">
+  <div class="login-card">
+    <h1 class="wordmark">GraphRAG</h1>
+    <p class="dek">A private desk for the documents you give it.</p>
+    <form id="login-form" novalidate>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <button type="submit">Enter</button>
+      <p class="field-note" id="login-error" role="alert" hidden></p>
+    </form>
+  </div>
+</section>
+
+<section id="app-view" hidden>
+  <header class="topbar">
+    <h1 class="wordmark">GraphRAG</h1>
+    <button type="button" id="logout-button">Log out</button>
+  </header>
+
+  <p id="storage-banner" class="banner banner-danger" role="alert" hidden></p>
+
+  <section class="desk-section" aria-labelledby="upload-heading">
+    <h2 id="upload-heading">Add documents</h2>
+    <p class="hint">.pdf, .txt or .md, up to 1&nbsp;MB each.</p>
+    <form id="upload-form">
+      <label id="drop-zone" for="file-input">
+        <span>Drop files here, or choose from your disk</span>
+        <input id="file-input" type="file" accept=".pdf,.txt,.md" multiple>
+      </label>
+    </form>
+    <ul id="upload-list" aria-live="polite"></ul>
+  </section>
+
+  <section class="desk-section" aria-labelledby="ask-heading">
+    <h2 id="ask-heading">Ask a question</h2>
+    <form id="ask-form">
+      <label for="question" class="visually-hidden">Your question</label>
+      <input id="question" name="question" type="text" placeholder="What does the evidence say?" required maxlength="2000" autocomplete="off">
+      <button type="submit" id="ask-button">Ask</button>
+    </form>
+  </section>
+
+  <section aria-label="Findings">
+    <ol id="log" reversed></ol>
+  </section>
+</section>
+
+<template id="entry-template">
+  <li class="entry">
+    <p class="entry-question"></p>
+    <div class="entry-body"></div>
+  </li>
+</template>
+
+<template id="source-template">
+  <li class="source-card">
+    <button type="button" class="source-toggle" aria-expanded="false">
+      <span class="source-file"></span>
+      <span class="source-excerpt-preview"></span>
+    </button>
+    <p class="source-excerpt-full" hidden></p>
+  </li>
+</template>
+
+<script src="app.js"></script>
