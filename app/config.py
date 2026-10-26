@@ -99,6 +99,16 @@ ANSWER_TIMEOUT_SECONDS = 90.0
 # reasoning that per-chunk extraction does not, when the model is healthy.
 ANSWER_THINKING_BUDGET = 4096
 
+# A short backoff before the one retry on an overloaded model (503
+# UNAVAILABLE / "high demand", or a non-daily 429 RESOURCE_EXHAUSTED) -
+# unlike a bare deadline, hammering an already-overloaded model again
+# immediately is unlikely to help. Overridden by the server's own
+# retryDelay when a 429 supplies one; capped so a server-suggested delay
+# meant for a daily cap (hours) can never apply here (daily caps are
+# excluded from this path entirely - see `_is_overloaded`).
+OVERLOAD_RETRY_BACKOFF_SECONDS = 5.0
+OVERLOAD_RETRY_MAX_BACKOFF_SECONDS = 30.0
+
 # Free-tier friendly: 2 concurrent extraction calls, not 5. A free Gemini key
 # has a low requests-per-minute ceiling, and going wider just trips 429s.
 EXTRACTION_CONCURRENCY = 2

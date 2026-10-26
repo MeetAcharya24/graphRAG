@@ -17,6 +17,8 @@ from app.config import (
     ANSWER_TIMEOUT_SECONDS,
     EXTRACTION_THINKING_BUDGET,
     LLM_TIMEOUT_SECONDS,
+    OVERLOAD_RETRY_BACKOFF_SECONDS,
+    OVERLOAD_RETRY_MAX_BACKOFF_SECONDS,
 )
 from app.errors import (
     AppError,
@@ -224,13 +226,34 @@ class _ThinkingUnsupported(Exception):
     """
 
 
-class _DeadlineExceeded(Exception):
-    """Internal signal: Gemini's own server deadline expired mid-call.
+class _RetryableFailure(Exception):
+    """Internal signal: this attempt is worth one retry, and - if that retry
+    also fails - worth falling back to a different model before giving up.
 
     Raised with `from exc` so the original SDK exception is `__cause__`, in
-    case a retry also fails and needs translating. Never escapes
+    case the retry also fails and needs translating. Never escapes
     `generate_structured`.
     """
+
+
+class _DeadlineExceeded(_RetryableFailure):
+    """Internal signal: Gemini's own server deadline expired mid-call, or a
+    bare client-side socket timeout with no response at all."""
+
+
+class _ModelOverloaded(_RetryableFailure):
+    """Internal signal: Gemini reported this specific model as overloaded
+    right now - a 503 UNAVAILABLE ("high demand"), or a 429
+    RESOURCE_EXHAUSTED that is not a confirmed daily cap.
+
+    `retry_after`, when the API supplied one, overrides the default backoff
+    before the retry - unlike a deadline, hammering an overloaded model
+    again immediately is unlikely to help.
+    """
+
+    def __init__(self, retry_after: float | None = None) -> None:
+        super().__init__()
+        self.retry_after = retry_after
 
 
 def _is_deadline_exceeded(exc: Exception) -> bool:
@@ -256,6 +279,32 @@ def _is_deadline_exceeded(exc: Exception) -> bool:
             return True
     text = f"{type(exc).__name__} {exc}".lower()
     return "timed out" in text or "timeout" in text
+
+
+def _is_overloaded(exc: Exception) -> bool:
+    """True when Gemini reports THIS model specifically overloaded right
+    now: a 503 UNAVAILABLE ("high demand"/"overloaded"), or a 429
+    RESOURCE_EXHAUSTED that is a per-minute burst rather than a confirmed
+    daily cap.
+
+    A daily cap is deliberately excluded: it is permanent until midnight
+    Pacific, `with_retry` already refuses to retry it (see
+    `LLMQuotaExceeded`), and the retryDelay on one can be measured in
+    hours - treating it as overload-worthy here would both retry
+    pointlessly and use that delay as the backoff.
+    """
+    if isinstance(exc, genai_errors.ServerError):
+        status = str(getattr(exc, "status", "") or "").upper()
+        message = str(getattr(exc, "message", "") or exc).lower()
+        return "UNAVAILABLE" in status or "high demand" in message or "overloaded" in message
+    if isinstance(exc, genai_errors.ClientError) and getattr(exc, "code", None) == 429:
+        message = str(getattr(exc, "message", None) or exc)
+        structured = daily_quota_from_details(getattr(exc, "details", None))
+        is_daily = (
+            structured if structured is not None else looks_like_daily_quota(message)
+        )
+        return not is_daily
+    return False
 
 
 def _is_thinking_rejection(exc: Exception) -> bool:
@@ -399,18 +448,41 @@ class GeminiProvider:
                     raise _ThinkingUnsupported from exc
                 if _is_deadline_exceeded(exc):
                     raise _DeadlineExceeded from exc
+                if _is_overloaded(exc):
+                    retry_after = (
+                        _retry_after_of(exc)
+                        if isinstance(exc, genai_errors.ClientError)
+                        else None
+                    )
+                    raise _ModelOverloaded(retry_after) from exc
                 raise translate_error(exc) from exc
             elapsed = time.monotonic() - start
             log.info("Gemini generateContent for %s took %.2fs", model_id, elapsed)
             return _parsed_or_raise(response, schema)
 
-        def call_with_deadline_retry(limit_thinking: bool, model_id: str) -> SchemaT:
-            """One retry, no backoff: a fresh attempt is the whole point -
-            waiting first would only burn more of the same deadline. Lets a
-            second _DeadlineExceeded propagate (rather than translating it
-            here) so the caller can decide whether to fall back to a
-            different model before giving up."""
+        def call_with_retry(limit_thinking: bool, model_id: str) -> SchemaT:
+            """One retry before giving up on this model. A deadline is
+            retried immediately - a fresh attempt is the whole point, and
+            waiting first would only burn more of the same deadline.
+            Overload gets a short backoff first instead - hammering an
+            already-overloaded model again immediately is unlikely to help.
+
+            Lets a second _RetryableFailure propagate (rather than
+            translating it here) so the caller can decide whether to fall
+            back to a different model before giving up."""
             try:
+                return call(limit_thinking, model_id)
+            except _ModelOverloaded as exc:
+                backoff = min(
+                    exc.retry_after or OVERLOAD_RETRY_BACKOFF_SECONDS,
+                    OVERLOAD_RETRY_MAX_BACKOFF_SECONDS,
+                )
+                log.warning(
+                    "Gemini model %s is overloaded; backing off %.1fs and retrying once.",
+                    model_id,
+                    backoff,
+                )
+                time.sleep(backoff)
                 return call(limit_thinking, model_id)
             except _DeadlineExceeded:
                 log.warning(
@@ -421,9 +493,9 @@ class GeminiProvider:
         def try_model(model_id: str) -> SchemaT:
             """Run the full thinking-budget-fallback dance against one model."""
             if not minimal_reasoning:
-                return call_with_deadline_retry(limit_thinking=False, model_id=model_id)
+                return call_with_retry(limit_thinking=False, model_id=model_id)
             try:
-                return call_with_deadline_retry(limit_thinking=True, model_id=model_id)
+                return call_with_retry(limit_thinking=True, model_id=model_id)
             except _ThinkingUnsupported:
                 # Not every model accepts a zero thinking budget. Losing the
                 # saving is acceptable; failing the request is not.
@@ -432,22 +504,23 @@ class GeminiProvider:
                 # a second call for a bad key or a stale model id too, doubling
                 # request burn on a free tier whose quota counts requests.
                 log.debug("Model %s rejected a thinking budget; retrying without.", model_id)
-                return call_with_deadline_retry(limit_thinking=False, model_id=model_id)
+                return call_with_retry(limit_thinking=False, model_id=model_id)
 
         def attempt() -> SchemaT:
             try:
                 return try_model(model)
-            except _DeadlineExceeded as exc:
+            except _RetryableFailure as exc:
                 if not fallback_model or fallback_model == model:
                     raise translate_error(exc.__cause__) from exc
                 log.warning(
-                    "Gemini model %s timed out twice in a row; falling back to %s.",
+                    "Gemini model %s failed twice in a row (%s); falling back to %s.",
                     model,
+                    type(exc).__name__,
                     fallback_model,
                 )
                 try:
                     return try_model(fallback_model)
-                except _DeadlineExceeded as fallback_exc:
+                except _RetryableFailure as fallback_exc:
                     raise translate_error(fallback_exc.__cause__) from fallback_exc
 
         return with_retry(attempt, description=f"{model} structured generation")

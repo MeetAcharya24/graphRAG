@@ -589,3 +589,110 @@ def test_a_fallback_model_that_also_times_out_still_surfaces_a_clear_error() -> 
         "gemini-3.5-flash",
         "gemini-3.5-flash",
     ]
+
+
+# --- model overload (503 / non-daily 429) also triggers the fallback ------
+
+
+def _overloaded_error():
+    return _server_error(
+        "UNAVAILABLE",
+        "This model is currently experiencing high demand. Spikes in "
+        "demand are usually temporary. Please try again later.",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _no_real_backoff_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The overload backoff is real `time.sleep` in production; skip it here
+    so these tests do not actually wait OVERLOAD_RETRY_BACKOFF_SECONDS."""
+    from app.llm import gemini_provider
+
+    monkeypatch.setattr(gemini_provider.time, "sleep", lambda _seconds: None)
+
+
+def test_is_overloaded_matches_high_demand_but_not_a_daily_cap() -> None:
+    """The bug this guards: the fallback only ever triggered on a timeout,
+    so a 503 "high demand" overload reply - not a timeout at all - fell
+    straight through to a plain error with no retry and no fallback."""
+    from app.llm.gemini_provider import _is_overloaded
+
+    assert _is_overloaded(_overloaded_error())
+    assert _is_overloaded(
+        _client_error(429, "Quota exceeded for metric generate_requests_per_minute")
+    )
+    # A daily cap is permanent until midnight Pacific - retrying it (on this
+    # model or a fallback) cannot help, and with_retry already refuses to.
+    assert not _is_overloaded(
+        _client_error(429, "Quota exceeded for metric generate_requests_per_day")
+    )
+    assert not _is_overloaded(_client_error(404, "model not found"))
+    assert not _is_overloaded(ValueError("unrelated"))
+
+
+def test_an_overloaded_model_backs_off_and_retries_once_then_succeeds() -> None:
+    from types import SimpleNamespace
+
+    ok_response = SimpleNamespace(parsed=_AnswerSchema("ok"))
+    provider, calls = _stub_provider([_overloaded_error(), ok_response])
+
+    result = provider.generate_structured(
+        model="gemini-3.8-flash",
+        prompt="question",
+        schema=_AnswerSchema,
+        max_tokens=100,
+    )
+
+    assert result.value == "ok"
+    assert len(calls) == 2
+
+
+def test_an_overloaded_model_falls_back_after_its_retry_also_fails() -> None:
+    from types import SimpleNamespace
+
+    ok_response = SimpleNamespace(parsed=_AnswerSchema("from fallback"))
+    provider, calls = _stub_provider_multi(
+        {
+            "gemini-3.8-flash": [_overloaded_error(), _overloaded_error()],
+            "gemini-3.5-flash": [ok_response],
+        }
+    )
+
+    result = provider.generate_structured(
+        model="gemini-3.8-flash",
+        prompt="question",
+        schema=_AnswerSchema,
+        max_tokens=100,
+        fallback_model="gemini-3.5-flash",
+    )
+
+    assert result.value == "from fallback"
+    assert calls == ["gemini-3.8-flash", "gemini-3.8-flash", "gemini-3.5-flash"]
+
+
+def test_a_daily_quota_error_still_never_retries_or_falls_back() -> None:
+    """Unlike overload, a daily cap must not consume the fallback either -
+    it is not something a short backoff or a different model call fixes
+    within the same request, and with_retry's own no-retry behaviour for it
+    is already covered elsewhere; this just confirms the overload path
+    leaves that alone."""
+    from app.errors import LLMQuotaExceeded
+
+    provider, calls = _stub_provider_multi(
+        {
+            "gemini-3.8-flash": [
+                _client_error(429, "Quota exceeded for metric generate_requests_per_day")
+            ],
+        }
+    )
+
+    with pytest.raises(LLMQuotaExceeded):
+        provider.generate_structured(
+            model="gemini-3.8-flash",
+            prompt="question",
+            schema=_AnswerSchema,
+            max_tokens=100,
+            fallback_model="gemini-3.5-flash",
+        )
+
+    assert calls == ["gemini-3.8-flash"]
