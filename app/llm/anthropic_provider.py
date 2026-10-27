@@ -127,6 +127,7 @@ class AnthropicProvider:
         minimal_reasoning: bool = False,
         fallback_model: str | None = None,  # noqa: ARG002 - not wired up for Anthropic
         telemetry: dict | None = None,
+        budget_seconds: float | None = None,  # noqa: ARG002 - Gemini-only for now
     ) -> SchemaT:
         start = time.monotonic()
 

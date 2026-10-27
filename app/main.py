@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 from uuid import uuid4
@@ -14,13 +15,22 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app.config import (
+    ANSWER_TOTAL_BUDGET_SECONDS,
     MAX_CHUNK_COUNT,
+    MIN_ANSWER_BUDGET_SECONDS,
     PROJECT_ROOT,
     PROVIDER_GEMINI,
     SESSION_COOKIE_NAME,
     get_settings,
 )
-from app.errors import AppError, JobNotFound, TooManyChunks, TooManyRequests, ok
+from app.errors import (
+    AnswerBudgetExhausted,
+    AppError,
+    JobNotFound,
+    TooManyChunks,
+    TooManyRequests,
+    ok,
+)
 from app.ingest import pipeline
 from app.ingest.chunker import chunk_text
 from app.ingest.loaders import load_document
@@ -464,7 +474,9 @@ def ask(request: Request, body: AskRequest) -> dict:
     empty bundle costs no LLM call, and every citation the model returns is
     verified against the bundle before it can reach the response.
     """
+    started = time.perf_counter()
     _enforce_quota_limit(request)
+    gate_seconds = time.perf_counter() - started
 
     bundle = hybrid_retrieve(
         body.question,
@@ -472,13 +484,39 @@ def ask(request: Request, body: AskRequest) -> dict:
         vector_store=get_vector_store(),
         embedder=get_embedder(),
     )
+    retrieval_seconds = time.perf_counter() - started - gate_seconds
+
+    # The budget covers the whole request, not just the model call. Retrieval
+    # could previously run for minutes and the answer call would then start
+    # its own separate, full budget - so the cap never bound what a user
+    # actually waits for.
+    remaining = ANSWER_TOTAL_BUDGET_SECONDS - (time.perf_counter() - started)
+    if remaining <= MIN_ANSWER_BUDGET_SECONDS:
+        log.warning(
+            "Retrieval used %.2fs of the %.0fs budget; refusing to start the answer call.",
+            retrieval_seconds,
+            ANSWER_TOTAL_BUDGET_SECONDS,
+        )
+        raise AnswerBudgetExhausted(
+            "Finding the evidence for that question took too long.",
+            hint="Try asking something more specific, or try again in a moment.",
+        )
+
+    answer = answer_question(
+        body.question, bundle, get_provider(), budget_seconds=remaining
+    )
 
     log.info(
-        "Question answered from %d chunk(s), %d path(s)",
+        "Question answered from %d chunk(s), %d path(s) - gate %.2fs, "
+        "retrieval %.2fs, answer %.2fs, total %.2fs",
         len(bundle.chunks),
         len(bundle.paths),
+        gate_seconds,
+        retrieval_seconds,
+        answer.get("elapsed_seconds") or 0.0,
+        time.perf_counter() - started,
     )
-    return ok(answer_question(body.question, bundle, get_provider()))
+    return ok(answer)
 
 
 class RetrieveRequest(BaseModel):

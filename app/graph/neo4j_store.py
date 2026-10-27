@@ -114,6 +114,16 @@ class Neo4jGraphStore:
         records = self._run(cypher.GET_ENTITY, write=False, entity_id=entity_id)
         return _entity_from_node(records[0]["e"]) if records else None
 
+    def get_entities(self, entity_ids: Sequence[str]) -> dict[str, Entity]:
+        ids = list(dict.fromkeys(entity_ids))
+        if not ids:
+            return {}
+
+        records = self._run(cypher.GET_ENTITIES, write=False, entity_ids=ids)
+        return {
+            record["e"]["entity_id"]: _entity_from_node(record["e"]) for record in records
+        }
+
     def get_relation(self, rel_id: str) -> Relation | None:
         records = self._run(cypher.GET_RELATION, write=False, rel_id=rel_id)
         if not records:
@@ -179,11 +189,48 @@ class Neo4jGraphStore:
             paths.append(GraphPath(nodes=tuple(nodes), edges=tuple(edges)))
         return paths
 
+    def shortest_paths_many(
+        self, pairs: Sequence[tuple[str, str]], max_hops: int
+    ) -> dict[tuple[str, str], list[GraphPath]]:
+        wanted = [
+            pair for pair in dict.fromkeys(pairs) if pair[0] != pair[1]
+        ]
+        if not wanted:
+            return {}
+
+        records = self._run(
+            cypher.shortest_paths_many(max_hops),
+            write=False,
+            pairs=[{"source_id": source, "target_id": target} for source, target in wanted],
+        )
+
+        found: dict[tuple[str, str], list[GraphPath]] = {pair: [] for pair in wanted}
+        for record in records:
+            nodes = [_entity_from_node(node) for node in record["path_nodes"]]
+            edges = [_relation_from_mapping(edge) for edge in record["path_edges"]]
+            found[(record["source_id"], record["target_id"])].append(
+                GraphPath(nodes=tuple(nodes), edges=tuple(edges))
+            )
+        return found
+
     # --- dedup support (Phase 5) ---
 
     def relations_of(self, entity_id: str) -> list[Relation]:
         records = self._run(cypher.RELATIONS_OF_ENTITY, write=False, entity_id=entity_id)
         return [_relation_from_mapping(record) for record in records]
+
+    def relations_of_many(
+        self, entity_ids: Sequence[str]
+    ) -> dict[str, list[Relation]]:
+        ids = list(dict.fromkeys(entity_ids))
+        if not ids:
+            return {}
+
+        records = self._run(cypher.RELATIONS_OF_ENTITIES, write=False, entity_ids=ids)
+        grouped: dict[str, list[Relation]] = {entity_id: [] for entity_id in ids}
+        for record in records:
+            grouped[record["entity_id"]].append(_relation_from_mapping(record))
+        return grouped
 
     def delete_entity(self, entity_id: str) -> bool:
         records = self._run(cypher.DELETE_ENTITY, write=True, entity_id=entity_id)

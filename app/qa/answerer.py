@@ -150,12 +150,22 @@ def render_paths(verified_edge_ids: Sequence[str], bundle: EvidenceBundle) -> li
     ]
 
 
-def answer_question(question: str, bundle: EvidenceBundle, provider) -> dict:
+def answer_question(
+    question: str,
+    bundle: EvidenceBundle,
+    provider,
+    *,
+    budget_seconds: float | None = None,
+) -> dict:
     """Answer from the bundle, or say plainly that there is none - no LLM call either way.
 
     `model_used`/`elapsed_seconds` are always present so a caller never has
     to guess which model answered or how long it took - including for the
     no-LLM-call fast path below, where they are `None`/`0.0`.
+
+    `budget_seconds` is what remains of the caller's wall-clock budget, so
+    retrieval that ran long leaves the answer call correspondingly less
+    instead of starting a fresh full budget on top of it.
     """
     if not bundle.chunks:
         return {
@@ -177,6 +187,7 @@ def answer_question(question: str, bundle: EvidenceBundle, provider) -> dict:
         max_tokens=ANSWER_MAX_TOKENS,
         fallback_model=get_settings().answer_fallback_model or None,
         telemetry=telemetry,
+        budget_seconds=budget_seconds,
     )
     model_used = telemetry.get("model_used", get_settings().answer_model)
     elapsed_seconds = telemetry.get("total_elapsed_seconds", 0.0)

@@ -26,6 +26,7 @@ hops without adding information.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -42,8 +43,11 @@ from app.config import (
     VECTOR_TOP_K,
 )
 from app.graph.base import GraphStore, normalize_name
+from app.logging_conf import get_logger
 from app.schemas import Chunk, Entity, EvidenceBundle, EvidenceChunk, GraphPath, Relation
 from app.vector.base import Embedder, ScoredChunk, VectorStore
+
+log = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -53,6 +57,34 @@ class ScoredEdge:
     relation: Relation
     score: float
     hop: int
+
+
+class _StageTimer:
+    """Wall-clock per stage, for one line in the log at the end.
+
+    Which stage is slow is the whole question here: the offline suite and a
+    live request differ by two orders of magnitude, and the difference is
+    network round trips that no in-process measurement would show.
+    """
+
+    def __init__(self) -> None:
+        self._start = time.perf_counter()
+        self._last = self._start
+        self._stages: list[tuple[str, float]] = []
+
+    def mark(self, stage: str) -> None:
+        now = time.perf_counter()
+        self._stages.append((stage, now - self._last))
+        self._last = now
+
+    @property
+    def elapsed(self) -> float:
+        return time.perf_counter() - self._start
+
+    def render(self) -> str:
+        parts = [f"{stage} {seconds:.2f}s" for stage, seconds in self._stages]
+        parts.append(f"total {self.elapsed:.2f}s")
+        return ", ".join(parts)
 
 
 # --- seeding -----------------------------------------------------------------
@@ -96,10 +128,18 @@ def seed_entities(
     Sorted by `entity_id` so the seed set - and everything built from it - is
     deterministic regardless of the store's internal iteration order.
     """
+    return seeds_among(question, vector_chunks, store.all_entities())
+
+
+def seeds_among(
+    question: str, vector_chunks: Sequence[ScoredChunk], entities: Sequence[Entity]
+) -> list[Entity]:
+    """`seed_entities` against entities already in hand, so the caller can
+    reuse that one full read instead of paying for it twice."""
     chunk_ids = {scored.chunk.chunk_id for scored in vector_chunks}
     seeds: dict[str, Entity] = {}
 
-    for entity in store.all_entities():
+    for entity in entities:
         if chunk_ids & set(entity.mention_chunk_ids):
             seeds[entity.entity_id] = entity
         elif _name_matches_question(entity, question):
@@ -112,17 +152,31 @@ def seed_entities(
 
 
 def expand_subgraph(
-    seed_ids: Sequence[str], store: GraphStore
+    seed_ids: Sequence[str],
+    store: GraphStore,
+    *,
+    entities_by_id: dict[str, Entity] | None = None,
 ) -> tuple[dict[str, Entity], dict[str, ScoredEdge]]:
     """Hop-decayed BFS from the seeds, capped at `MAX_SUBGRAPH_NODES` nodes.
 
     A node's out-edges are degree-capped at `MAX_ENTITY_DEGREE`, highest
     confidence first, before they are followed - so a hub entity contributes
     its most reliable edges rather than an arbitrary slice of all of them.
+
+    `entities_by_id`, when given, is every entity already in hand - seeding
+    reads them all anyway, so passing them here removes a lookup per hop.
     """
+    known = entities_by_id
+
+    def lookup(wanted: Sequence[str]) -> dict[str, Entity]:
+        if known is None:
+            return store.get_entities(wanted)
+        return {eid: known[eid] for eid in wanted if eid in known}
+
+    seed_entities_by_id = lookup(seed_ids)
     nodes: dict[str, Entity] = {}
     for seed_id in seed_ids:
-        entity = store.get_entity(seed_id)
+        entity = seed_entities_by_id.get(seed_id)
         if entity is not None:
             nodes[seed_id] = entity
 
@@ -134,10 +188,12 @@ def expand_subgraph(
             break
         decay = HOP_DECAY[min(hop, len(HOP_DECAY)) - 1]
 
+        relations_by_node = store.relations_of_many(frontier)
+
         candidates: list[tuple[float, Relation, str]] = []
         for node_id in frontier:
             degree_capped = sorted(
-                store.relations_of(node_id), key=lambda r: (-r.confidence, r.rel_id)
+                relations_by_node.get(node_id, ()), key=lambda r: (-r.confidence, r.rel_id)
             )[:MAX_ENTITY_DEGREE]
             for relation in degree_capped:
                 neighbor_id = (
@@ -151,12 +207,23 @@ def expand_subgraph(
         # first, relation id breaks ties.
         candidates.sort(key=lambda item: (-item[0], item[1].rel_id))
 
+        # One lookup for the whole hop's new neighbours. A few get resolved and
+        # then dropped when the node budget runs out mid-hop, which is a far
+        # better trade than a network round trip each.
+        fetched = lookup(
+            [
+                neighbor_id
+                for _score, _relation, neighbor_id in candidates
+                if neighbor_id not in nodes
+            ]
+        )
+
         next_frontier: list[str] = []
         for score, relation, neighbor_id in candidates:
             if neighbor_id not in nodes:
                 if len(nodes) >= MAX_SUBGRAPH_NODES:
                     continue
-                entity = store.get_entity(neighbor_id)
+                entity = fetched.get(neighbor_id)
                 if entity is None:
                     continue
                 nodes[neighbor_id] = entity
@@ -171,20 +238,19 @@ def expand_subgraph(
     return nodes, edges
 
 
-def _is_hub(entity_id: str, store: GraphStore, degree_cache: dict[str, int]) -> bool:
+def _is_hub(entity_id: str, degree_by_id: dict[str, int]) -> bool:
     """True when `entity_id` exceeds `MAX_ENTITY_DEGREE` - the same bar
     `expand_subgraph` already enforces before following a node's edges.
 
-    Cached per `_boost_shortest_paths` call: the same hub (the agency in
-    every chunk of an agency/client document) recurs across many seed pairs.
+    Degrees are prefetched for every intermediate node at once (see
+    `_boost_shortest_paths`); an id that was never fetched has no edges worth
+    counting, so it is not a hub.
     """
-    if entity_id not in degree_cache:
-        degree_cache[entity_id] = len(store.relations_of(entity_id))
-    return degree_cache[entity_id] > MAX_ENTITY_DEGREE
+    return degree_by_id.get(entity_id, 0) > MAX_ENTITY_DEGREE
 
 
 def _only_connects_through_a_hub(
-    path: GraphPath, store: GraphStore, degree_cache: dict[str, int]
+    path: GraphPath, degree_by_id: dict[str, int]
 ) -> bool:
     """True when every node BETWEEN the two endpoints is a hub.
 
@@ -197,7 +263,7 @@ def _only_connects_through_a_hub(
     """
     intermediate = path.nodes[1:-1]
     return bool(intermediate) and all(
-        _is_hub(node.entity_id, store, degree_cache) for node in intermediate
+        _is_hub(node.entity_id, degree_by_id) for node in intermediate
     )
 
 
@@ -243,29 +309,44 @@ def _boost_shortest_paths(
     shorter path already kept, is left out of what gets rendered - its edges
     still count as evidence, just not as a path worth showing on its own.
     """
-    raw_paths: list[GraphPath] = []
-    degree_cache: dict[str, int] = {}
     ordered_seeds = sorted(set(seed_ids))
+    pairs = [
+        (source, target)
+        for i, source in enumerate(ordered_seeds)
+        for target in ordered_seeds[i + 1 :]
+    ]
 
-    for i, source in enumerate(ordered_seeds):
-        for target in ordered_seeds[i + 1 :]:
-            for path in store.shortest_paths(source, target, MAX_HOPS):
-                raw_paths.append(path)
-                for node in path.nodes:
-                    nodes.setdefault(node.entity_id, node)
-                for position, relation in enumerate(path.edges, start=1):
-                    decay = HOP_DECAY[min(position, len(HOP_DECAY)) - 1]
-                    score = relation.confidence * decay * PATH_BOOST
-                    existing = edges.get(relation.rel_id)
-                    if existing is None or score > existing.score:
-                        edges[relation.rel_id] = ScoredEdge(
-                            relation=relation, score=score, hop=position
-                        )
+    # One query for every pair. Asking pair by pair is quadratic in the seed
+    # count, and against Aura that is latency, not query time - the reason a
+    # live question took minutes while the offline suite took seconds.
+    paths_by_pair = store.shortest_paths_many(pairs, MAX_HOPS)
+
+    raw_paths: list[GraphPath] = []
+    for pair in pairs:
+        for path in paths_by_pair.get(pair, ()):
+            raw_paths.append(path)
+            for node in path.nodes:
+                nodes.setdefault(node.entity_id, node)
+            for position, relation in enumerate(path.edges, start=1):
+                decay = HOP_DECAY[min(position, len(HOP_DECAY)) - 1]
+                score = relation.confidence * decay * PATH_BOOST
+                existing = edges.get(relation.rel_id)
+                if existing is None or score > existing.score:
+                    edges[relation.rel_id] = ScoredEdge(
+                        relation=relation, score=score, hop=position
+                    )
+
+    # Degrees for every node that could be a hub, in one more query rather
+    # than one per node as the paths are filtered.
+    degree_by_id = {
+        entity_id: len(relations)
+        for entity_id, relations in store.relations_of_many(
+            [node.entity_id for path in raw_paths for node in path.nodes[1:-1]]
+        ).items()
+    }
 
     kept_paths = [
-        path
-        for path in raw_paths
-        if not _only_connects_through_a_hub(path, store, degree_cache)
+        path for path in raw_paths if not _only_connects_through_a_hub(path, degree_by_id)
     ]
     return _dedupe_superset_paths(kept_paths)
 
@@ -325,10 +406,20 @@ def hybrid_retrieve(
     error: expansion and boosting are simply skipped, and the bundle holds
     whatever the vector search alone found.
     """
-    question_vector = embedder.embed_query(question)
-    vector_hits = vector_store.query(question_vector, k=top_k)
+    timer = _StageTimer()
 
-    seeds = seed_entities(question, vector_hits, store)
+    question_vector = embedder.embed_query(question)
+    timer.mark("embed_question")
+
+    vector_hits = vector_store.query(question_vector, k=top_k)
+    timer.mark("vector_search")
+
+    # Read every entity once: seeding needs them all, and expansion then
+    # resolves its neighbours out of the same map rather than asking again.
+    all_entities = store.all_entities()
+    entities_by_id = {entity.entity_id: entity for entity in all_entities}
+    seeds = seeds_among(question, vector_hits, all_entities)
+    timer.mark("seed_resolution")
 
     nodes: dict[str, Entity] = {}
     edges: dict[str, ScoredEdge] = {}
@@ -336,8 +427,10 @@ def hybrid_retrieve(
 
     if seeds:
         seed_ids = [entity.entity_id for entity in seeds]
-        nodes, edges = expand_subgraph(seed_ids, store)
+        nodes, edges = expand_subgraph(seed_ids, store, entities_by_id=entities_by_id)
+        timer.mark("expand_subgraph")
         paths = _boost_shortest_paths(seed_ids, store, nodes, edges)
+        timer.mark("shortest_paths")
 
     edge_score_by_chunk: dict[str, float] = {}
     for edge in edges.values():
@@ -348,6 +441,16 @@ def hybrid_retrieve(
 
     graph_chunks = vector_store.get_by_ids(sorted(edge_score_by_chunk))
     chunks = _evidence_chunks(vector_hits, graph_chunks, edge_score_by_chunk)
+    timer.mark("chunk_recovery")
+
+    log.info(
+        "Retrieval: %d seed(s), %d node(s), %d edge(s), %d path(s) - %s",
+        len(seeds),
+        len(nodes),
+        len(edges),
+        len(paths),
+        timer.render(),
+    )
 
     return EvidenceBundle(
         chunks=chunks,

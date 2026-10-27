@@ -50,6 +50,14 @@ class GraphStore(Protocol):
     def get_entity(self, entity_id: str) -> Entity | None:
         ...
 
+    def get_entities(self, entity_ids: Sequence[str]) -> dict[str, Entity]:
+        """`get_entity` for many ids in one round trip; unknown ids are absent.
+
+        Retrieval walks tens of nodes per question, and against Aura each
+        one-id-at-a-time lookup is a separate network round trip.
+        """
+        ...
+
     def get_relation(self, rel_id: str) -> Relation | None:
         ...
 
@@ -72,6 +80,18 @@ class GraphStore(Protocol):
         """Shortest walks between two entities, or [] if none within the limit."""
         ...
 
+    def shortest_paths_many(
+        self, pairs: Sequence[tuple[str, str]], max_hops: int
+    ) -> dict[tuple[str, str], list[GraphPath]]:
+        """`shortest_paths` for many pairs in one round trip, keyed by pair.
+
+        Retrieval asks for every pair of seeds, so this is quadratic in the
+        seed count - as separate queries that is what made a live question
+        take minutes rather than seconds. Pairs with the same id at both ends
+        are skipped, exactly as `shortest_paths` returns [] for them.
+        """
+        ...
+
     def all_entities(self) -> list[Entity]:
         ...
 
@@ -80,6 +100,16 @@ class GraphStore(Protocol):
 
         Phase 5's `merge_entity_into` rewires these onto the surviving entity
         before the duplicate is deleted.
+        """
+        ...
+
+    def relations_of_many(
+        self, entity_ids: Sequence[str]
+    ) -> dict[str, list[Relation]]:
+        """`relations_of` for many ids in one round trip, keyed by id.
+
+        Every requested id gets an entry, empty when it has no edges or does
+        not exist - so callers can treat a miss and an isolated node alike.
         """
         ...
 

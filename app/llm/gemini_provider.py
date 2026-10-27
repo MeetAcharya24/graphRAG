@@ -390,13 +390,19 @@ class GeminiProvider:
         minimal_reasoning: bool = False,
         fallback_model: str | None = None,
         telemetry: dict | None = None,
+        budget_seconds: float | None = None,
     ) -> SchemaT:
         overall_start = time.monotonic()
         # The total wall-clock ceiling for this whole call (primary + its
         # retry + fallback + its retry) - answer calls only. Extraction has
         # no fallback and already uses the client-level default timeout, so
         # a budget here would only complicate it for no benefit.
-        deadline = None if minimal_reasoning else overall_start + ANSWER_TOTAL_BUDGET_SECONDS
+        #
+        # `budget_seconds` is whatever is left of the *request's* budget once
+        # retrieval is done, so a slow graph walk shortens the answer call
+        # instead of running on top of a fresh full budget.
+        budget = ANSWER_TOTAL_BUDGET_SECONDS if budget_seconds is None else budget_seconds
+        deadline = None if minimal_reasoning else overall_start + budget
         used_model = model
 
         def time_left() -> float | None:
@@ -549,7 +555,7 @@ class GeminiProvider:
                         "Gemini model %s failed twice and the %.0fs answer budget "
                         "is exhausted; not trying the fallback.",
                         model,
-                        ANSWER_TOTAL_BUDGET_SECONDS,
+                        budget,
                     )
                     raise translate_error(exc.__cause__) from exc
                 log.warning(

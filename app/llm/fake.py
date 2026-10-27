@@ -43,6 +43,7 @@ class FakeLLM:
         minimal_reasoning: bool = False,
         fallback_model: str | None = None,
         telemetry: dict | None = None,
+        budget_seconds: float | None = None,
     ) -> SchemaT:
         self.calls.append(
             {
@@ -52,6 +53,7 @@ class FakeLLM:
                 "system": system,
                 "max_tokens": max_tokens,
                 "minimal_reasoning": minimal_reasoning,
+                "budget_seconds": budget_seconds,
                 "fallback_model": fallback_model,
             }
         )

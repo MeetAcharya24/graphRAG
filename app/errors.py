@@ -142,6 +142,17 @@ class LLMBadResponse(AppError):
     code = "llm_bad_response"
 
 
+class AnswerBudgetExhausted(AppError):
+    """Retrieval alone used up the request's wall-clock budget.
+
+    504 rather than 503: the work was accepted and simply took too long, so
+    the honest answer is that the caller should stop waiting for it.
+    """
+
+    status_code = 504
+    code = "answer_budget_exhausted"
+
+
 def ok(data: Any) -> dict[str, Any]:
     """The success half of the response envelope."""
     return {"ok": True, "data": data, "error": None}

@@ -80,6 +80,15 @@ class InMemoryGraphStore:
     def get_entity(self, entity_id: str) -> Entity | None:
         return self._entities.get(entity_id)
 
+    def get_entities(self, entity_ids: Sequence[str]) -> dict[str, Entity]:
+        # Batched only to match the seam: there is no round trip to save here.
+        # The conformance suite is what proves the two stores still agree.
+        return {
+            entity_id: self._entities[entity_id]
+            for entity_id in dict.fromkeys(entity_ids)
+            if entity_id in self._entities
+        }
+
     def get_relation(self, rel_id: str) -> Relation | None:
         return self._relations.get(rel_id)
 
@@ -169,6 +178,15 @@ class InMemoryGraphStore:
 
         return results
 
+    def shortest_paths_many(
+        self, pairs: Sequence[tuple[str, str]], max_hops: int
+    ) -> dict[tuple[str, str], list[GraphPath]]:
+        return {
+            (source, target): self.shortest_paths(source, target, max_hops)
+            for source, target in dict.fromkeys(pairs)
+            if source != target
+        }
+
     def _build_path(self, source_id: str, rel_ids: Sequence[str]) -> GraphPath:
         """Turn a list of relationship ids into nodes-and-edges, in walk order."""
         nodes = [self._entities[source_id]]
@@ -191,6 +209,14 @@ class InMemoryGraphStore:
     def relations_of(self, entity_id: str) -> list[Relation]:
         rel_ids = {rel_id for _neighbour, rel_id in self._adjacency.get(entity_id, ())}
         return [self._relations[rel_id] for rel_id in rel_ids]
+
+    def relations_of_many(
+        self, entity_ids: Sequence[str]
+    ) -> dict[str, list[Relation]]:
+        return {
+            entity_id: self.relations_of(entity_id)
+            for entity_id in dict.fromkeys(entity_ids)
+        }
 
     def delete_entity(self, entity_id: str) -> bool:
         if entity_id not in self._entities:

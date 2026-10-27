@@ -8,6 +8,7 @@ reaches the client as a clean envelope rather than a stack trace.
 
 from __future__ import annotations
 
+from app import main
 from app.errors import LLMQuotaExceeded
 from app.qa.answerer import Answer
 
@@ -143,3 +144,38 @@ def test_a_quota_error_is_a_clean_envelope_not_a_stack_trace(
     body = response.json()
     assert body["ok"] is False
     assert body["error"]["code"] == "llm_quota_exceeded"
+
+
+# --- the budget covers the whole request, not just the model call ---------
+
+
+def test_slow_retrieval_gives_up_instead_of_starting_an_answer_call(
+    auth_client, fakes, poll_job, monkeypatch
+) -> None:
+    """The live bug: the cap only ever covered the Gemini call, so retrieval
+    could spend minutes and the answer call would still start afterwards on
+    its own fresh, full budget."""
+    _upload(auth_client, poll_job, "deal.txt", ACQUISITION)
+    calls_after_ingest = len(fakes["provider"].calls)
+    monkeypatch.setattr(main, "ANSWER_TOTAL_BUDGET_SECONDS", 0.0)
+
+    response = _ask(auth_client, "Who acquired Helios Labs?")
+
+    assert response.status_code == 504
+    assert response.json()["error"]["code"] == "answer_budget_exhausted"
+    assert (
+        len(fakes["provider"].calls) == calls_after_ingest
+    ), "an unaffordable answer call must not be made"
+
+
+def test_the_answer_call_only_gets_the_budget_retrieval_left_behind(
+    auth_client, fakes, poll_job, monkeypatch
+) -> None:
+    _upload(auth_client, poll_job, "deal.txt", ACQUISITION)
+    fakes["provider"].queue(Answer(answer="Northwind Systems."))
+    monkeypatch.setattr(main, "ANSWER_TOTAL_BUDGET_SECONDS", 30.0)
+
+    _ask(auth_client, "Who acquired Helios Labs?")
+
+    budget = fakes["provider"].calls[-1]["budget_seconds"]
+    assert 0 < budget < 30.0, "time retrieval spent must come out of the budget"

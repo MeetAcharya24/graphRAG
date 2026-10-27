@@ -84,6 +84,8 @@ RETURN e
 
 GET_ENTITY = "MATCH (e:Entity {entity_id: $entity_id}) RETURN e"
 
+GET_ENTITIES = "MATCH (e:Entity) WHERE e.entity_id IN $entity_ids RETURN e"
+
 ALL_ENTITIES = "MATCH (e:Entity) RETURN e"
 
 FIND_ENTITIES_BY_NAME = """
@@ -104,6 +106,18 @@ RETURN count(e) AS removed
 RELATIONS_OF_ENTITY = """
 MATCH (e:Entity {entity_id: $entity_id})-[r:RELATES]-(:Entity)
 RETURN DISTINCT r.rel_id AS rel_id, r.type AS type,
+       r.source_chunk_id AS source_chunk_id, r.confidence AS confidence,
+       startNode(r).entity_id AS source_id, endNode(r).entity_id AS target_id
+"""
+
+# The batched form, for retrieval: one round trip for a whole BFS frontier
+# instead of one per node. `entity_id` comes back on every row so the caller
+# can group the edges again - an edge between two requested entities is
+# returned once per end, which is what per-node degree capping needs.
+RELATIONS_OF_ENTITIES = """
+MATCH (e:Entity)-[r:RELATES]-(:Entity)
+WHERE e.entity_id IN $entity_ids
+RETURN DISTINCT e.entity_id AS entity_id, r.rel_id AS rel_id, r.type AS type,
        r.source_chunk_id AS source_chunk_id, r.confidence AS confidence,
        startNode(r).entity_id AS source_id, endNode(r).entity_id AS target_id
 """
@@ -189,6 +203,42 @@ MATCH (source:Entity {{entity_id: $source_id}})
 MATCH (target:Entity {{entity_id: $target_id}})
 MATCH path = allShortestPaths((source)-[:RELATES*1..{hops}]-(target))
 RETURN [n IN nodes(path) | n] AS path_nodes,
+       [r IN relationships(path) | {{
+           rel_id: r.rel_id,
+           type: r.type,
+           source_chunk_id: r.source_chunk_id,
+           confidence: r.confidence,
+           source_id: startNode(r).entity_id,
+           target_id: endNode(r).entity_id
+       }}] AS path_edges
+"""
+
+
+def shortest_paths_many(max_hops: int) -> str:
+    """The same walks, for many pairs at once.
+
+    Retrieval boosts the shortest path between every *pair* of seeds, which
+    one-pair-per-query turns into a quadratic number of round trips - the
+    single biggest cost of a live `/api/ask` against Aura, where each round
+    trip is network latency rather than query time. The pair is echoed back
+    from `$pairs` rather than read off the matched nodes, so rows group onto
+    the pair that was asked for even though the walk itself is undirected.
+
+    `CALL { WITH pair ... }` deliberately, not the `CALL (pair) { ... }`
+    scope syntax: that form is Neo4j 5.23+, and schema.py advertises 5.13+.
+    """
+    hops = _checked_hops(max_hops)
+    return f"""
+UNWIND $pairs AS pair
+CALL {{
+    WITH pair
+    MATCH (source:Entity {{entity_id: pair.source_id}})
+    MATCH (target:Entity {{entity_id: pair.target_id}})
+    MATCH path = allShortestPaths((source)-[:RELATES*1..{hops}]-(target))
+    RETURN path
+}}
+RETURN pair.source_id AS source_id, pair.target_id AS target_id,
+       [n IN nodes(path) | n] AS path_nodes,
        [r IN relationships(path) | {{
            rel_id: r.rel_id,
            type: r.type,

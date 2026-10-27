@@ -120,6 +120,11 @@ OVERLOAD_RETRY_MAX_BACKOFF_SECONDS = 30.0
 # gone, no further attempt (retry or fallback) is started at all.
 ANSWER_TOTAL_BUDGET_SECONDS = 60.0
 
+# How much of that budget must survive retrieval for /api/ask to bother
+# starting the answer call. A call handed a two-second deadline will time out
+# and still spend quota, so refusing early is both faster and cheaper.
+MIN_ANSWER_BUDGET_SECONDS = 5.0
+
 # Free-tier friendly: 2 concurrent extraction calls, not 5. A free Gemini key
 # has a low requests-per-minute ceiling, and going wider just trips 429s.
 EXTRACTION_CONCURRENCY = 2

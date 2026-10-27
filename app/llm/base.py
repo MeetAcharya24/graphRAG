@@ -127,6 +127,7 @@ class LLMProvider(Protocol):
         minimal_reasoning: bool = False,
         fallback_model: str | None = None,
         telemetry: dict | None = None,
+        budget_seconds: float | None = None,
     ) -> SchemaT:
         """Return a validated instance of `schema`.
 
@@ -142,5 +143,10 @@ class LLMProvider(Protocol):
         model id that actually produced the result - `model` or
         `fallback_model`) and `total_elapsed_seconds`, so a caller can log or
         surface which model answered and how long it took without guessing.
+
+        `budget_seconds` caps the wall clock for the whole call, retries and
+        fallback included. The caller passes what is left of the request's
+        budget, so time already spent retrieving is time the answer call does
+        not get - without it, a request could spend its budget twice over.
         """
         ...
