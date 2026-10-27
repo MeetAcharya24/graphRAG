@@ -1,8 +1,20 @@
-/* GraphRAG — Phase 10 UI.
+/* GraphRAG — Phase 10 UI, design pass.
    A private research desk read by lamplight: warm dark paper, a literary
    serif for what the system finds, a humanist sans for the controls that
-   find it. The one accent (the "lamp") is spent on the graph-path chain,
-   primary actions, and focus states — nowhere else. */
+   find it.
+
+   The organising motif is THE WIRE — a drawn hairline. The graph path is
+   pills strung on it, and the loading indicator is the same wire filling
+   left to right, so the wait reads as the trail being drawn before you know
+   where it leads. The amber "lamp" is spent on the wire, primary actions and
+   focus states, and nowhere else.
+
+   Things deliberately NOT here, having been tried and cut: section headings
+   above the ask and upload fields (labels above content), separate stacked
+   banner bars (one notice slot instead), and boxed source cards with soft
+   shadows (numbered ledger rows instead). The only shadow in the design is
+   the glow on the path pills, because that is the one thing meant to be
+   looked at. */
 
 @font-face {
   font-family: "Literata";
@@ -29,18 +41,30 @@
 }
 
 :root {
-  --paper: #16140f;
-  --paper-raised: #1d1a13;
-  --ink: #ede7d8;
-  --ink-muted: #9a9178;
-  --lamp: #d9a441;
-  --lamp-ink: #16140f;
-  --signal: #d97b6e;
-  --rule: #2e2a1f;
+  /* Verified against #14120d: ink 15.5:1, ink-muted 7.0:1, lamp 8.9:1,
+     signal 9.0:1 — all AA, most AAA. */
+  --paper: #14120d;
+  --paper-raised: #1b1812;
+  --paper-sunk: #0f0d09;
+  --ink: #efe9da;
+  --ink-muted: #a89d82;
+  --lamp: #e0a94a;
+  --lamp-ink: #14120d;
+  --lamp-wash: rgba(224, 169, 74, 0.17);
+  --lamp-glow: rgba(224, 169, 74, 0.28);
+  --signal: #e8a391;
+  --rule: #332e22;
+
   --serif: "Literata", "Iowan Old Style", Georgia, serif;
   --sans: "Work Sans", "Segoe UI", Tahoma, sans-serif;
-  --measure: 38rem;
+
+  /* The prose measure (~65 characters at the answer's size) and the wider
+     track the path chain is allowed to use. The trail is wider than the
+     prose it supports; that asymmetry is the point. */
+  --measure: 34rem;
+  --track: 54rem;
   --radius: 5px;
+  --step: 120ms; /* one pill of the path draw */
 }
 
 * {
@@ -58,15 +82,39 @@ html {
 body {
   margin: 0;
   background: var(--paper);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  background-blend-mode: overlay;
-  background-size: 140px 140px;
   color: var(--ink);
-  font: 400 1rem/1.5 var(--sans);
+  font: 400 1rem/1.55 var(--sans);
   padding: 0 1.25rem;
+  min-height: 100vh;
+  position: relative;
 }
 
-h1, h2 {
+/* Layered ground: fine grain over the whole page, warm vignette from the top
+   left where the lamp would be. Fixed so neither tiles with scroll. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  opacity: 0.4;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+  background-size: 160px 160px;
+  mix-blend-mode: overlay;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(70% 50% at 18% -5%, rgba(224, 169, 74, 0.07), transparent 70%),
+    radial-gradient(90% 70% at 50% 110%, rgba(0, 0, 0, 0.45), transparent 70%);
+}
+
+h1 {
   margin: 0;
   font-family: var(--serif);
   font-weight: 600;
@@ -76,22 +124,26 @@ p {
   margin: 0 0 0.75rem;
 }
 
+a, button, input, label {
+  font-family: inherit;
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;
   height: 1px;
   overflow: hidden;
-  clip: rect(0 0 0 0);
-}
-
-a, button, input, label {
-  font-family: inherit;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 :focus-visible {
   outline: 2px solid var(--lamp);
   outline-offset: 2px;
+  border-radius: 2px;
 }
+
+/* --- controls ----------------------------------------------------------- */
 
 button {
   cursor: pointer;
@@ -100,10 +152,14 @@ button {
   background: transparent;
   color: var(--ink);
   padding: 0.5rem 1.1rem;
-  font-size: 0.95rem;
+  font-size: 0.9375rem;
 }
 
-button[type="submit"],
+button:hover:not(:disabled) {
+  border-color: var(--lamp);
+  color: var(--lamp);
+}
+
 .primary {
   background: var(--lamp);
   color: var(--lamp-ink);
@@ -111,15 +167,21 @@ button[type="submit"],
   font-weight: 600;
 }
 
+.primary:hover:not(:disabled) {
+  background: #eeb757;
+  border-color: #eeb757;
+  color: var(--lamp-ink);
+}
+
 button:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
 input[type="text"],
 input[type="password"] {
-  background: var(--paper);
-  border: 1px solid var(--ink-muted);
+  background: var(--paper-sunk);
+  border: 1px solid var(--rule);
   border-radius: var(--radius);
   color: var(--ink);
   padding: 0.6rem 0.75rem;
@@ -127,24 +189,42 @@ input[type="password"] {
   width: 100%;
 }
 
-/* --- banners --------------------------------------------------------- */
-
-#wake-banner,
-.banner {
-  max-width: var(--measure);
-  margin: 1rem auto 0;
-  padding: 0.65rem 0.9rem;
-  border-radius: var(--radius);
-  border: 1px solid var(--ink-muted);
-  font-size: 0.9rem;
+input::placeholder {
+  color: var(--ink-muted);
+  opacity: 1;
 }
 
-.banner-danger {
-  border-color: var(--signal);
+input:hover {
+  border-color: var(--ink-muted);
+}
+
+input:focus {
+  border-color: var(--lamp);
+}
+
+/* --- notices: one slot, calm, never an alarm block --------------------- */
+
+.note {
+  max-width: var(--measure);
+  margin: 0 0 0.75rem;
+  padding: 0.55rem 0 0.55rem 0.85rem;
+  border-left: 2px solid var(--ink-muted);
+  color: var(--ink-muted);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.note-signal {
+  border-left-color: var(--signal);
   color: var(--signal);
 }
 
-/* --- login ------------------------------------------------------------ */
+.note-lamp {
+  border-left-color: var(--lamp);
+  color: var(--ink);
+}
+
+/* --- login -------------------------------------------------------------- */
 
 #login-view {
   min-height: 100vh;
@@ -154,7 +234,7 @@ input[type="password"] {
 }
 
 .login-card {
-  max-width: 22rem;
+  max-width: 21rem;
   width: 100%;
   background: var(--paper-raised);
   border: 1px solid var(--rule);
@@ -163,18 +243,19 @@ input[type="password"] {
 }
 
 .wordmark {
-  font-size: 1.6rem;
+  font-size: 1.5rem;
+  letter-spacing: -0.01em;
 }
 
 .dek {
   color: var(--ink-muted);
-  font-size: 0.95rem;
+  font-size: 0.9375rem;
+  margin-bottom: 1.5rem;
 }
 
-.login-card label,
-.desk-section label:not(#drop-zone) {
+.login-card label {
   display: block;
-  font-size: 0.85rem;
+  font-size: 0.8125rem;
   color: var(--ink-muted);
   margin-bottom: 0.3rem;
 }
@@ -185,54 +266,602 @@ input[type="password"] {
   gap: 0.75rem;
 }
 
-.field-note {
-  color: var(--signal);
-  font-size: 0.85rem;
+/* --- app shell -----------------------------------------------------------
+   A real flex column, full viewport height: masthead (fixed), stage (grows
+   to fill whatever room there is), status bar (fixed, pinned to the bottom
+   by the stage's flex:1 rather than position:sticky). This is what makes
+   the page read as composed at any height instead of content that ran out
+   partway down a tall viewport. */
+
+#app-view {
+  min-height: 100vh;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.masthead {
+  width: 100%;
+  max-width: var(--track);
+  margin: 0 auto;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 2.25rem 0 1.5rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.masthead-id {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.masthead .wordmark {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 2rem;
+  letter-spacing: -0.015em;
+}
+
+/* The one spark the wordmark gets: the lamp the whole palette is named
+   after, lit once beside the product name rather than used as a generic
+   logo mark. */
+.wordmark-mark {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--lamp);
+  box-shadow: 0 0 9px var(--lamp-glow), 0 0 2px var(--lamp);
+  flex: none;
+}
+
+.tagline {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.9375rem;
+}
+
+/* --- the stage: everything between the masthead and the status bar ----- */
+
+.stage {
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: var(--track);
+  margin: 0 auto;
+  padding: 2.5rem 0 3rem;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(2rem, 5vw, 3rem);
+}
+
+/* An empty notice slot or an empty log must not claim a gap of their own -
+   `gap` only skips a child that is genuinely out of flow. */
+#notices:empty,
+.log:empty {
+  display: none;
+}
+
+/* With nothing ingested yet, the arrival copy and the drop zone are the
+   only two things on the stage, so they centre as a group in whatever room
+   the viewport gives them rather than sitting pinned to the top. */
+#app-view[data-desk="empty"] .stage {
+  justify-content: center;
+}
+
+/* --- the empty desk: the arrival moment --------------------------------- */
+
+.desk-empty {
+  max-width: var(--measure);
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+
+.desk-line {
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: 2rem;
+  line-height: 1.25;
   margin: 0;
 }
 
-/* --- app shell ---------------------------------------------------------- */
-
-#app-view {
-  max-width: var(--measure);
-  margin: 0 auto;
-  padding: 2rem 0 4rem;
+.desk-sub {
+  color: var(--ink-muted);
+  max-width: 30rem;
+  line-height: 1.65;
+  margin: 0;
 }
 
-.topbar {
+/* A real sentence, not a labelled card: the quoted question is the only
+   thing styled to invite a click, set off by an underline rather than a
+   button border or an appended arrow. */
+.example-chip {
+  align-self: flex-start;
+  max-width: 30rem;
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  text-align: left;
+  color: var(--ink-muted);
+  font-size: 0.9375rem;
+  line-height: 1.6;
+}
+
+.example-chip q {
+  font-family: var(--serif);
+  font-style: italic;
+  color: var(--ink);
+  text-decoration: underline dashed 1px;
+  text-decoration-color: var(--rule);
+  text-underline-offset: 3px;
+}
+
+.example-chip:hover,
+.example-chip:focus-visible {
+  color: var(--lamp);
+  border-color: transparent;
+}
+
+.example-chip:hover q,
+.example-chip:focus-visible q {
+  color: var(--lamp);
+  text-decoration-color: var(--lamp);
+}
+
+/* --- ask: the primary action on the stage ------------------------------- */
+
+#ask-form {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
+  gap: 0.6rem;
+  max-width: 40rem;
+}
+
+#ask-form input {
+  flex: 1;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 1.1875rem;
+  padding: 0.85rem 1rem;
+}
+
+#ask-form button {
+  flex: none;
+  padding: 0.5rem 1.4rem;
+  font-size: 1rem;
+}
+
+/* --- the choreographed wait -------------------------------------------- */
+
+.progress {
+  max-width: var(--measure);
+}
+
+.progress-stage {
+  font-size: 0.875rem;
+  color: var(--ink-muted);
+  letter-spacing: 0.01em;
+  margin-bottom: 0.6rem;
+  min-height: 1.3em;
+}
+
+.wire {
+  height: 1px;
+  background: var(--rule);
+  position: relative;
+}
+
+.wire-progress {
+  overflow: hidden;
+}
+
+.wire-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--lamp);
+  box-shadow: 0 0 6px var(--lamp-glow);
+  /* The stage driver sets transition-duration inline. Without this, the
+     initial `transition-property: all` would let that inline duration
+     animate the wire even under prefers-reduced-motion; the no-preference
+     block below is what opts the width back in. */
+  transition-property: none;
+}
+
+/* --- the ledger of findings -------------------------------------------- */
+
+.log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 3rem;
+}
+
+.entry {
+  display: flex;
+  flex-direction: column;
+}
+
+.entry-question {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 1.0625rem;
+  color: var(--ink-muted);
+  max-width: var(--measure);
   margin-bottom: 1.5rem;
+  /* A typed question is free-form text with no guarantee of a break point
+     (a pasted URL, an unbroken run of characters) - wrap it rather than
+     ever letting it force the page wider than the viewport. */
+  overflow-wrap: break-word;
 }
 
-.topbar .wordmark {
-  font-size: 1.3rem;
-}
+/* --- THE PATH CHAIN: the hero ------------------------------------------ */
 
-.desk-section {
+.entry-paths {
   margin-bottom: 2rem;
 }
 
-.desk-section h2 {
-  font-size: 1.05rem;
-  margin-bottom: 0.4rem;
+.entry-paths:empty {
+  display: none;
 }
 
-.hint {
+/* A path is a line, so it stays one line and scrolls rather than wrapping
+   (which strands a connector's arrow pointing into the margin) or shrinking
+   the pills to nothing. A pill cut off at the right edge is the affordance.
+   The container takes a tabindex so the scroll is reachable by keyboard. */
+.path-chain {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.5rem 0 1.25rem;
+  scrollbar-width: thin;
+  scrollbar-color: var(--rule) transparent;
+}
+
+/* A tick between runs, not a full rule: several paths through one answer
+   should read as separate walks, not as rows of a table. */
+.path-chain + .path-chain {
+  padding-top: 1.25rem;
+  position: relative;
+}
+
+.path-chain + .path-chain::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 2.5rem;
+  border-top: 1px solid var(--rule);
+}
+
+.path-run {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  width: max-content;
+}
+
+/* One wire segment: the relation name set above the hairline it labels. */
+.path-link {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  flex: none;
+  padding: 0 0.1rem;
+  min-width: 4.5rem;
+}
+
+.path-relation {
+  font-family: var(--sans);
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   color: var(--ink-muted);
-  font-size: 0.85rem;
+  white-space: nowrap;
+  padding: 0 0.4rem;
 }
 
-/* --- upload -------------------------------------------------------------- */
+.path-wire {
+  display: block;
+  width: 100%;
+  height: 1px;
+  background: var(--lamp);
+  opacity: 0.55;
+  position: relative;
+}
+
+.path-wire::after {
+  content: "";
+  position: absolute;
+  right: -1px;
+  top: -2.5px;
+  border-top: 3px solid transparent;
+  border-bottom: 3px solid transparent;
+  border-left: 5px solid var(--lamp);
+}
+
+.path-pill {
+  flex: none;
+  font-family: var(--serif);
+  font-size: 0.9375rem;
+  font-weight: 500;
+  line-height: 1.25;
+  color: var(--ink);
+  background: var(--paper-raised);
+  border: 1px solid var(--lamp);
+  border-radius: 999px;
+  padding: 0.4rem 0.9rem;
+  white-space: nowrap;
+  box-shadow: 0 0 14px var(--lamp-glow), inset 0 0 0 1px rgba(224, 169, 74, 0.06);
+}
+
+/* Node kinds, quietly: fill and border style carry the distinction, nothing
+   else. Inferred from the relation vocabulary (the response carries names
+   only), so an unrecognised edge leaves its endpoints neutral rather than
+   guessing. */
+.path-pill[data-kind="work"] {
+  background: var(--lamp-wash);
+}
+
+.path-pill[data-kind="material"] {
+  background: transparent;
+  border-style: dashed;
+  box-shadow: none;
+  color: var(--ink-muted);
+}
+
+.path-pill[data-kind="place"] {
+  background: transparent;
+  border-color: var(--ink-muted);
+  box-shadow: none;
+  font-style: italic;
+}
+
+.path-pill[data-kind="unknown"] {
+  border-color: var(--ink-muted);
+  box-shadow: none;
+}
+
+/* --- the answer: the second hero --------------------------------------- */
+
+.entry-answer-block {
+  display: flex;
+  gap: 1.1rem;
+}
+
+/* Confidence is a mark, not a number: a short length of the same wire, set
+   beside the answer's opening line and filled in proportion. Fixed height on
+   purpose — a rule that stretched with the answer would read as a blockquote
+   bar, and 80% would be indistinguishable from 100%. The figure stays
+   available to assistive tech through the block's title and a hidden line. */
+.confidence {
+  flex: none;
+  width: 2px;
+  height: 2.75rem;
+  margin-top: 0.45rem;
+  border-radius: 1px;
+  background: var(--rule);
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+}
+
+.confidence-fill {
+  display: block;
+  width: 100%;
+  border-radius: 1px;
+  background: var(--lamp);
+  box-shadow: 0 0 8px var(--lamp-glow);
+}
+
+.entry-answer {
+  font-family: var(--serif);
+  font-size: 1.3125rem;
+  line-height: 1.68;
+  /* In em, not rem: the measure stays at roughly 65 characters when the
+     size steps down on a narrow screen. Measured, not guessed. */
+  max-width: 39em;
+}
+
+.entry-answer p {
+  margin: 0 0 0.9rem;
+}
+
+.entry-answer p:last-child {
+  margin-bottom: 0;
+}
+
+.entry-answer ol {
+  margin: 0 0 0.9rem;
+  padding: 0;
+  list-style: none;
+  counter-reset: finding;
+}
+
+.entry-answer ol:last-child {
+  margin-bottom: 0;
+}
+
+.entry-answer ol li {
+  counter-increment: finding;
+  position: relative;
+  padding-left: 2rem;
+  margin-bottom: 0.7rem;
+}
+
+.entry-answer ol li::before {
+  content: counter(finding);
+  position: absolute;
+  left: 0;
+  /* Aligned to the x-height of the item's first line, not its top, so the
+     figure sits with the text rather than superscripted above it. */
+  top: 0.85rem;
+  font-family: var(--sans);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: var(--lamp);
+}
+
+.entry-answer ol li:last-child {
+  margin-bottom: 0;
+}
+
+/* Thin evidence and failures: the same shape, stated quietly. */
+.entry.no-evidence .entry-answer {
+  color: var(--ink-muted);
+  font-style: italic;
+  font-size: 1.1875rem;
+}
+
+.entry.entry-error .entry-answer {
+  color: var(--signal);
+  font-size: 1.1875rem;
+}
+
+.entry.entry-error .confidence-fill {
+  background: var(--signal);
+  box-shadow: none;
+}
+
+/* --- sources: numbered ledger rows, matching the citations ------------- */
+
+.entry-sources {
+  margin-top: 2rem;
+  max-width: 42rem;
+}
+
+.entry-sources:empty {
+  display: none;
+}
+
+.source-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.source-row {
+  border-left: 1px solid var(--rule);
+}
+
+.source-row + .source-row {
+  margin-top: 0.15rem;
+}
+
+.source-row:hover,
+.source-row:focus-within {
+  border-left-color: var(--lamp);
+}
+
+.source-toggle {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 0.9rem;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+  padding: 0.6rem 0.8rem 0.65rem;
+  color: inherit;
+  font-size: inherit;
+}
+
+.source-toggle:hover:not(:disabled) {
+  background: var(--paper-raised);
+  border-color: transparent;
+  color: inherit;
+}
+
+.source-toggle:focus-visible {
+  outline-offset: -2px;
+}
+
+.source-number {
+  flex: none;
+  font-family: var(--sans);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--lamp);
+  width: 1rem;
+}
+
+.source-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.source-file {
+  font-family: var(--sans);
+  font-size: 0.8125rem;
+  color: var(--ink-muted);
+}
+
+.source-excerpt-preview {
+  font-family: var(--serif);
+  font-size: 0.9375rem;
+  line-height: 1.45;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-toggle[aria-expanded="true"] .source-excerpt-preview {
+  display: none;
+}
+
+/* Expanding animates open: the drawer's own height is measured in JS, so
+   there is no magic max-height for a long chunk to outgrow. */
+.source-drawer {
+  overflow: hidden;
+  height: 0;
+}
+
+.source-drawer.open {
+  height: auto;
+}
+
+.source-excerpt-full {
+  font-family: var(--serif);
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  margin: 0;
+  padding: 0 0.8rem 0.85rem 2.7rem;
+  color: var(--ink);
+}
+
+/* --- the desk drawer: upload, demoted once there is work on the desk --- */
+
+.desk-drawer {
+  max-width: var(--measure);
+  padding-top: 1.75rem;
+  border-top: 1px solid var(--rule);
+}
 
 #drop-zone {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 0.35rem;
   text-align: center;
-  min-height: 5rem;
-  border: 1px dashed var(--ink-muted);
+  min-height: 4rem;
+  border: 1px dashed var(--rule);
   border-radius: var(--radius);
   color: var(--ink-muted);
   cursor: pointer;
@@ -240,9 +869,25 @@ input[type="password"] {
   position: relative;
 }
 
+#app-view[data-desk="empty"] #drop-zone {
+  min-height: 9rem;
+  border-color: var(--ink-muted);
+  background: var(--paper-raised);
+}
+
+#drop-zone:hover,
 #drop-zone.drag-over {
   border-color: var(--lamp);
   color: var(--ink);
+}
+
+#drop-zone.drag-over {
+  background: var(--lamp-wash);
+}
+
+#drop-zone:focus-within {
+  outline: 2px solid var(--lamp);
+  outline-offset: 2px;
 }
 
 #drop-zone input[type="file"] {
@@ -252,217 +897,213 @@ input[type="password"] {
   opacity: 0;
 }
 
-#upload-list {
+.drop-line {
+  font-family: var(--serif);
+  font-size: 1rem;
+  color: var(--ink);
+}
+
+#app-view[data-desk="empty"] .drop-line {
+  font-size: 1.1875rem;
+}
+
+.drop-sub {
+  font-size: 0.8125rem;
+  color: var(--ink-muted);
+}
+
+/* --- upload rows -------------------------------------------------------- */
+
+.upload-list {
   list-style: none;
-  margin: 0.75rem 0 0;
+  margin: 1rem 0 0;
   padding: 0;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
 }
 
+.upload-list:empty {
+  display: none;
+}
+
 .upload-row {
-  border: 1px solid var(--rule);
-  border-radius: var(--radius);
-  padding: 0.6rem 0.8rem;
+  border-left: 2px solid var(--rule);
+  padding: 0.4rem 0 0.4rem 0.85rem;
   font-size: 0.9rem;
 }
 
+/* Amber marks what is still happening. A finished row recedes rather than
+   competing with one that is still working. */
+.upload-row.working {
+  border-left-color: var(--lamp);
+}
+
+.upload-row.done {
+  border-left-color: var(--ink-muted);
+}
+
+.upload-row.failed {
+  border-left-color: var(--signal);
+}
+
 .upload-row .filename {
-  font-weight: 600;
+  font-family: var(--sans);
+  font-weight: 500;
 }
 
 .upload-row .status-line {
   color: var(--ink-muted);
-  font-size: 0.85rem;
-  margin-top: 0.2rem;
+  font-size: 0.8125rem;
+  margin-top: 0.15rem;
 }
 
 .upload-row.failed .status-line {
   color: var(--signal);
 }
 
-/* --- ask ------------------------------------------------------------- */
-
-#ask-form {
-  display: flex;
-  gap: 0.6rem;
-}
-
-#ask-form input {
-  flex: 1;
-}
-
-/* --- the casebook log --------------------------------------------------- */
-
-#log {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column-reverse;
-  gap: 1.75rem;
-}
-
-.entry {
-  border-top: 1px solid var(--rule);
-  padding-top: 1.25rem;
-}
-
-.entry-question {
-  font-family: var(--serif);
-  font-style: italic;
-  font-size: 1.05rem;
-  color: var(--ink);
-  margin-bottom: 0.5rem;
-}
-
-.entry-answer {
-  font-family: var(--serif);
-  font-size: 1.1rem;
-  line-height: 1.6;
-}
-
-.entry.no-evidence .entry-answer,
-.entry.entry-error .entry-answer {
-  color: var(--ink-muted);
-  font-style: italic;
-}
-
-.entry.entry-error .entry-answer {
-  color: var(--signal);
-}
-
-.confidence-note {
-  color: var(--ink-muted);
-  font-size: 0.85rem;
-  margin: 0.4rem 0 0.9rem;
-}
-
-/* --- the graph path: the signature element --------------------------- */
-
-.path-chain {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.35rem;
-  background: var(--paper-raised);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius);
-  padding: 0.75rem 0.85rem;
-  margin: 0.5rem 0 1rem;
-}
-
-.path-pill {
-  border: 1px solid var(--lamp);
-  border-radius: 999px;
-  padding: 0.25rem 0.75rem;
-  font-size: 0.85rem;
-  font-weight: 500;
-  color: var(--ink);
-  background: var(--paper);
-  box-shadow: 0 0 10px rgba(217, 164, 65, 0.35);
-  white-space: nowrap;
-}
-
-.path-connector {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  color: var(--ink-muted);
-  font-size: 0.78rem;
-  font-style: italic;
-}
-
-.path-connector::before {
-  content: "";
-  display: inline-block;
-  width: 1.1rem;
+/* A hairline that tracks chunk progress, so "extracting 7/12" is also a
+   length you can read at a glance. */
+.upload-row .meter {
   height: 1px;
+  background: var(--rule);
+  margin-top: 0.5rem;
+  overflow: hidden;
+}
+
+.upload-row .meter span {
+  display: block;
+  height: 100%;
+  width: 0;
   background: var(--lamp);
 }
 
-.path-connector::after {
-  content: "";
-  display: inline-block;
-  width: 0;
-  height: 0;
-  border-top: 3px solid transparent;
-  border-bottom: 3px solid transparent;
-  border-left: 5px solid var(--lamp);
+.upload-row.done .meter,
+.upload-row.failed .meter {
+  display: none;
 }
 
-/* --- sources ----------------------------------------------------------- */
+/* --- the status footer: pinned to the bottom by the stage's flex:1,
+   always present once logged in rather than appearing and disappearing -
+   a stable bottom edge the page composes around at any height. ---------- */
 
-.source-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-
-.source-card {
-  border: 1px solid var(--rule);
-  border-radius: var(--radius);
-}
-
-.source-toggle {
+.status-bar {
+  flex: none;
   width: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.15rem;
-  border: none;
-  background: transparent;
-  text-align: left;
-  padding: 0.6rem 0.8rem;
+  max-width: var(--track);
+  margin: 0 auto;
+  padding: 1rem 0 1.75rem;
+  border-top: 1px solid var(--rule);
 }
 
-.source-file {
-  font-size: 0.8rem;
-  color: var(--ink-muted);
-}
-
-.source-excerpt-preview,
-.source-excerpt-full {
-  font-size: 0.9rem;
+#status-stats {
   margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
 }
 
-.source-excerpt-full {
-  padding: 0 0.8rem 0.7rem;
-}
-
-/* --- motion, respected ------------------------------------------------- */
+/* --- motion: one orchestrated sequence, and answers to actions --------- */
 
 @media (prefers-reduced-motion: no-preference) {
   .path-pill {
-    animation: pill-in 0.3s ease-out backwards;
+    animation: pill-in 320ms ease-out backwards;
+    animation-delay: calc(var(--i, 0) * var(--step));
+  }
+
+  .path-link {
+    animation: link-in 240ms ease-out backwards;
+    animation-delay: calc((var(--i, 0) * var(--step)) - 40ms);
+    transform-origin: left center;
+  }
+
+  .entry-answer-block {
+    animation: rise 420ms ease-out backwards;
+    animation-delay: var(--after-path, 0ms);
+  }
+
+  .entry-sources {
+    animation: rise 420ms ease-out backwards;
+    animation-delay: calc(var(--after-path, 0ms) + 120ms);
+  }
+
+  .wire-fill {
+    transition-property: width;
+    transition-timing-function: linear;
+  }
+
+  .source-drawer {
+    transition: height 220ms ease;
+  }
+
+  .upload-row .meter span {
+    transition: width 300ms ease;
+  }
+
+  .source-row,
+  .source-toggle,
+  button,
+  input,
+  #drop-zone {
+    transition: border-color 140ms ease, background-color 140ms ease, color 140ms ease;
   }
 
   @keyframes pill-in {
-    from {
-      opacity: 0;
-      transform: translateY(2px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
+    from { opacity: 0; transform: translateY(3px) scale(0.98); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  @keyframes link-in {
+    from { opacity: 0; transform: scaleX(0.2); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: none; }
   }
 }
 
-/* --- small screens ------------------------------------------------------ */
+/* --- narrow screens: works at 400px ------------------------------------ */
 
-@media (max-width: 420px) {
-  #app-view {
-    padding-top: 1.25rem;
+@media (max-width: 34rem) {
+  body {
+    padding: 0 1rem;
+  }
+
+  .masthead {
+    padding: 1.5rem 0 1.25rem;
+  }
+
+  .masthead .wordmark {
+    font-size: 1.5rem;
+  }
+
+  .stage {
+    padding: 1.75rem 0 2rem;
+    gap: 2rem;
   }
 
   #ask-form {
     flex-direction: column;
+    align-items: stretch;
+  }
+
+  .entry-answer {
+    font-size: 1.1875rem;
+    line-height: 1.6;
+  }
+
+  .entry-answer-block {
+    gap: 0.85rem;
+  }
+
+  .desk-line {
+    font-size: 1.4375rem;
+  }
+
+  .source-excerpt-full {
+    padding-left: 0.8rem;
   }
 
   .login-card {

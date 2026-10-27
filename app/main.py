@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import MutableHeaders
 
 from app.config import (
     ANSWER_TOTAL_BUDGET_SECONDS,
@@ -156,6 +157,54 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+class _NoCacheForStatic:
+    """Every GET outside `/api/` revalidates instead of trusting the
+    browser's own cache heuristics.
+
+    The incident this fixes: a UI redesign shipped new `index.html` plus
+    matching `app.js`/`styles.css`. `StaticFiles` sends `Last-Modified`/`ETag`
+    but no `Cache-Control`, so a browser is free to reuse a subresource it
+    already has without even asking the server - and did, serving the *old*
+    `app.js` alongside the *new* `index.html`. The two were never actually
+    inconsistent on disk; the HTML (the navigation) got revalidated and the
+    JS (a subresource) did not, which is exactly the kind of split this app
+    has no build step or hashed filenames to prevent otherwise.
+    `no-cache, must-revalidate` costs one cheap 304 round trip per load (the
+    ETag StaticFiles already sends) and makes that split impossible again.
+
+    A plain ASGI middleware, not `@app.middleware("http")` /
+    `BaseHTTPMiddleware`: that decorator mutates `response.headers` *after*
+    `call_next` returns, which this project live-diagnosed as silently
+    dropped for `StaticFiles`' `FileResponse` under real uvicorn (it worked
+    under `TestClient`'s transport and nowhere else - the two don't buffer a
+    streaming response the same way). Patching the `send` callable to add
+    the header onto the `http.response.start` message itself has no such
+    transport-dependent timing to get wrong.
+    """
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if (
+            scope["type"] != "http"
+            or scope["method"] not in ("GET", "HEAD")
+            or scope["path"].startswith("/api/")
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_header(message: dict) -> None:
+            if message["type"] == "http.response.start":
+                MutableHeaders(scope=message)["Cache-Control"] = "no-cache, must-revalidate"
+            await send(message)
+
+        await self.app(scope, receive, send_with_header)
+
+
+app.add_middleware(_NoCacheForStatic)
 
 
 @app.exception_handler(AppError)
