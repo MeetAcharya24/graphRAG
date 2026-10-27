@@ -698,6 +698,85 @@ def test_a_daily_quota_error_still_never_retries_or_falls_back() -> None:
     assert calls == ["gemini-3.8-flash"]
 
 
+# --- malformed/unparsable output repairs instead of just dropping ----------
+
+
+def test_unparsable_output_retries_once_with_a_repair_instruction_then_succeeds() -> None:
+    """The bug this guards: extraction batches were silently dropped on
+    "Gemini returned no parsable structured output" with no retry at all -
+    `_parsed_or_raise` raised a plain `LLMBadResponse` from outside the
+    try/except that feeds the other two retryable failures. Also confirms
+    the retry is a *repair*, not a blind replay: a higher token ceiling and
+    an explicit instruction, not the exact same request again."""
+    from types import SimpleNamespace
+
+    configs: list = []
+    unparsable = SimpleNamespace(parsed=None)
+    ok_response = SimpleNamespace(parsed=_AnswerSchema("ok"))
+
+    from app.llm.gemini_provider import GeminiProvider
+
+    class _Models:
+        def generate_content(self, *, model, contents, config):
+            configs.append(config)
+            return unparsable if len(configs) == 1 else ok_response
+
+    class _Client:
+        models = _Models()
+
+    provider = object.__new__(GeminiProvider)
+    provider._client = _Client()
+
+    result = provider.generate_structured(
+        model="gemini-3.8-flash", prompt="question", schema=_AnswerSchema, max_tokens=100
+    )
+
+    assert result.value == "ok"
+    assert len(configs) == 2
+    assert configs[1].max_output_tokens > configs[0].max_output_tokens
+    assert configs[0].system_instruction != configs[1].system_instruction
+    assert "could not be parsed" in configs[1].system_instruction
+
+
+def test_unparsable_output_falls_back_after_the_repair_retry_also_fails() -> None:
+    from types import SimpleNamespace
+
+    ok_response = SimpleNamespace(parsed=_AnswerSchema("from fallback"))
+    unparsable = SimpleNamespace(parsed=None)
+    provider, calls = _stub_provider_multi(
+        {
+            "gemini-3.8-flash": [unparsable, unparsable],
+            "gemini-3.5-flash": [ok_response],
+        }
+    )
+
+    result = provider.generate_structured(
+        model="gemini-3.8-flash",
+        prompt="question",
+        schema=_AnswerSchema,
+        max_tokens=100,
+        fallback_model="gemini-3.5-flash",
+    )
+
+    assert result.value == "from fallback"
+    assert calls == ["gemini-3.8-flash", "gemini-3.8-flash", "gemini-3.5-flash"]
+
+
+def test_unparsable_output_with_no_fallback_surfaces_the_original_message() -> None:
+    from app.errors import LLMBadResponse
+    from types import SimpleNamespace
+
+    unparsable_twice = [SimpleNamespace(parsed=None), SimpleNamespace(parsed=None)]
+    provider, calls = _stub_provider(unparsable_twice)
+
+    with pytest.raises(LLMBadResponse, match="no parsable structured output"):
+        provider.generate_structured(
+            model="gemini-3.8-flash", prompt="question", schema=_AnswerSchema, max_tokens=100
+        )
+
+    assert len(calls) == 2
+
+
 # --- the total answer budget caps retries AND the fallback -----------------
 
 

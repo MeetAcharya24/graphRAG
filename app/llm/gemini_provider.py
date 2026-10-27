@@ -155,7 +155,17 @@ def translate_error(exc: Exception) -> AppError:
 
     Specific first - a daily quota, a per-minute burst, and a bad key all need
     different handling, and one broad `except APIError` would lose that.
+
+    Idempotent on an already-typed error: `_MalformedOutput`'s `__cause__` is
+    the `LLMBadResponse` `_parsed_or_raise` raised, not a raw SDK exception
+    like the other `_RetryableFailure` subtypes carry, and every caller in
+    this module routes a retryable failure's `__cause__` through here on the
+    way out. Re-wrapping it would both lose the specific message and risk
+    tripping the catch-all at the bottom, which assumes an exception this
+    module has not already classified.
     """
+    if isinstance(exc, AppError):
+        return exc
     if isinstance(exc, genai_errors.ClientError):
         code = getattr(exc, "code", None)
         message = str(getattr(exc, "message", None) or exc)
@@ -255,6 +265,22 @@ class _ModelOverloaded(_RetryableFailure):
     def __init__(self, retry_after: float | None = None) -> None:
         super().__init__()
         self.retry_after = retry_after
+
+
+class _MalformedOutput(_RetryableFailure):
+    """Internal signal: the response could not be parsed as the requested
+    schema - empty, truncated mid-JSON, or otherwise invalid.
+
+    Live-observed on extraction batches ("Gemini returned no parsable
+    structured output"), silently dropping the whole batch with no retry:
+    `_parsed_or_raise` raised a plain `LLMBadResponse` from inside `call()`,
+    after the try/except that feeds the other two `_RetryableFailure`
+    subtypes, so it never reached `call_with_retry`'s retry logic or
+    `attempt()`'s fallback-model logic at all. The retry this enables is a
+    *repair* retry, not a blind one: `call()` raises max_tokens a little (in
+    case the cause was truncation) and adds an explicit instruction to
+    return clean JSON this time - see `call`'s `repair` parameter.
+    """
 
 
 def _is_deadline_exceeded(exc: Exception) -> bool:
@@ -408,18 +434,29 @@ class GeminiProvider:
         def time_left() -> float | None:
             return None if deadline is None else deadline - time.monotonic()
 
-        def call(limit_thinking: bool, model_id: str) -> SchemaT:
+        def call(limit_thinking: bool, model_id: str, *, repair: bool = False) -> SchemaT:
             """One API call. Raises _ThinkingUnsupported for a 400 that names
             the thinking budget, so the caller can retry without it, and
-            _DeadlineExceeded/_ModelOverloaded for the retryable cases - see
-            `_is_deadline_exceeded`/`_is_overloaded` - so the caller can
-            retry once."""
+            _DeadlineExceeded/_ModelOverloaded/_MalformedOutput for the
+            retryable cases - see `_is_deadline_exceeded`/`_is_overloaded` and
+            `_MalformedOutput`'s docstring - so the caller can retry once.
+
+            `repair=True` is that one retry for unparsable output: a higher
+            token ceiling in case the first attempt was truncated mid-JSON,
+            and an explicit instruction appended to the system prompt rather
+            than silently repeating the exact call that just failed."""
             nonlocal used_model
+            repair_note = (
+                "\n\nYour previous reply could not be parsed as the required "
+                "JSON schema. Reply again with ONLY valid JSON matching the "
+                "schema - no prose, no markdown fences, and make sure every "
+                "object and array is closed."
+            )
             config = types.GenerateContentConfig(
-                system_instruction=system,
+                system_instruction=f"{system}{repair_note}" if repair else system,
                 response_mime_type="application/json",
                 response_schema=schema,
-                max_output_tokens=max_tokens,
+                max_output_tokens=int(max_tokens * 1.5) if repair else max_tokens,
             )
             thinking_budget = EXTRACTION_THINKING_BUDGET if limit_thinking else None
             if limit_thinking:
@@ -450,11 +487,12 @@ class GeminiProvider:
                 )
             log.info(
                 "Gemini generateContent request: model=%s thinking_budget=%s "
-                "max_output_tokens=%d prompt_chars=%d",
+                "max_output_tokens=%d prompt_chars=%d%s",
                 model_id,
                 thinking_budget,
-                max_tokens,
+                config.max_output_tokens,
                 len(prompt),
+                " (repair retry)" if repair else "",
             )
             start = time.monotonic()
             try:
@@ -484,7 +522,10 @@ class GeminiProvider:
             elapsed = time.monotonic() - start
             log.info("Gemini generateContent for %s took %.2fs", model_id, elapsed)
             used_model = model_id
-            return _parsed_or_raise(response, schema)
+            try:
+                return _parsed_or_raise(response, schema)
+            except LLMBadResponse as exc:
+                raise _MalformedOutput from exc
 
         def call_with_retry(limit_thinking: bool, model_id: str) -> SchemaT:
             """One retry before giving up on this model. A deadline is
@@ -492,6 +533,8 @@ class GeminiProvider:
             waiting first would only burn more of the same deadline.
             Overload gets a short backoff first instead - hammering an
             already-overloaded model again immediately is unlikely to help.
+            Malformed output also retries immediately, as a repair attempt
+            (see `call`'s `repair` parameter) rather than a blind replay.
             Either way, skipped once the total budget is already spent, so
             the caller's fallback decision sees the original failure rather
             than waiting for a retry that was never going to fit.
@@ -526,6 +569,16 @@ class GeminiProvider:
                     "Gemini call for %s hit its own deadline; retrying once.", model_id
                 )
                 return call(limit_thinking, model_id)
+            except _MalformedOutput:
+                remaining = time_left()
+                if remaining is not None and remaining <= 0:
+                    raise
+                log.warning(
+                    "Gemini model %s returned unparsable output; "
+                    "retrying once with a repair instruction.",
+                    model_id,
+                )
+                return call(limit_thinking, model_id, repair=True)
 
         def try_model(model_id: str) -> SchemaT:
             """Run the full thinking-budget-fallback dance against one model."""
