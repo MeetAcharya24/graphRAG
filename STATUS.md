@@ -1,12 +1,11 @@
 # Status
 
 ## Where we stopped / what's next (in order)
-1. DONE (2026-10-27): Re-ingested agency09-tech-creds.md into Neo4j (35 entities, 26 relations). Live-verified multi-hop path + source citations.
-2. DONE (2026-10-27): `/api/ask` 69.5s -> 6.5s by batching the N+1 Neo4j round trips (`shortest_paths_many`, `RELATIONS_OF_ENTITIES`, `GET_ENTITIES`); budget now covers the whole request.
-3. NEXT: `/api/ask` is 6.5s, not the 5s target. Remaining stages: embed 0.7s + vector_search 1.2s + answer 1.7s = ~3.6s of Gemini/Aura network latency we don't control; graph work is ~8 Aura round trips at ~0.4s each. Only real lever left: collapse `expand_subgraph`'s 3 per-hop queries into one 3-hop fetch (~0.8s), at the cost of over-fetching on big graphs.
-4. DONE (2026-10-27): retry-with-repair on malformed extraction output (`_MalformedOutput` in `gemini_provider.py`): one retry on the same model with a higher token ceiling + an explicit "return clean JSON" instruction, falling back to a second model if configured. Root cause confirmed live: `_parsed_or_raise`'s `LLMBadResponse` was raised outside the try/except feeding the existing overload/deadline retry paths, so a malformed batch got zero retries before. Re-ingested agency09-tech-creds.md clean: 4/4 batches, 0 failed, 16/16 chunks -> **69 entities, 56 relations** (was 35/26 with half the doc missing).
-5. DONE (2026-10-27): UI design pass + crash fix (stale-static-asset caching; see git log) with live masthead/arrival/footer and a raw ASGI no-cache middleware.
-6. Phase 11 hardening.
+1. DONE: Re-ingest + `/api/ask` 69.5s -> 6.5s (batched Neo4j round trips). Still 1.5s over the 5s target; remaining lever is collapsing `expand_subgraph`'s 3 per-hop queries into one.
+2. DONE (2026-10-27): Retry-with-repair on malformed extraction output (`_MalformedOutput` in `gemini_provider.py`). Re-ingested clean: 0 batches failed, **69 entities, 56 relations** (was 35/26).
+3. DONE (2026-10-27): UI design pass + stale-static-asset crash fix (masthead/arrival/footer, ASGI no-cache middleware). All of the above committed and pushed to `master` (through `2ec7a2b`).
+4. NEXT: Phase 11 hardening (filename sanitization, `DELETE /api/documents/{doc_id}`, structured request logging - see PLAN.md).
+5. NEXT after that: redeploy to Render and re-test the live site - it's still running a build from several days ago, predating all of the above.
 
 **Phase:** 10 done, UI design pass done. **Tests:** 448 passing offline (73 live deselected).
 
