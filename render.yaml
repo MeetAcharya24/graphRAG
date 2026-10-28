@@ -26,6 +26,16 @@ services:
       - key: GEMINI_API_KEY
         sync: false
 
+      # Not secret - pinned here so a fresh deploy can't silently fall back to
+      # config.py's default (now empty on purpose, so it fails loudly instead)
+      # the way an unset GEMINI_ANSWER_MODEL once let Render fall back to a
+      # hardcoded model since found to hang on free tier. Re-run
+      # `python -m app.llm.models --write` if either stops being offered.
+      - key: GEMINI_ANSWER_MODEL
+        value: gemini-3-flash-preview
+      - key: GEMINI_ANSWER_FALLBACK_MODEL
+        value: gemini-3.5-flash
+
       # The app refuses to start without this (D11).
       - key: APP_PASSWORD
         sync: false

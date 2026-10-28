@@ -32,7 +32,12 @@ DEFAULT_PROVIDER = PROVIDER_GEMINI
 # Empty means "not yet discovered"; the app starts but refuses LLM calls.
 # Kept per provider so switching back does not reuse the other one's ids.
 DEFAULT_GEMINI_EXTRACTION_MODEL = "gemini-3.5-flash-lite"
-DEFAULT_GEMINI_ANSWER_MODEL = "gemini-3.8-flash"
+# Left empty deliberately (unlike extraction, above): gemini-3.8-flash was
+# live-diagnosed as a free-tier model that can sit unresponsive for over a
+# minute (see ANSWER_TIMEOUT_SECONDS below) and was hardcoded here, which let
+# a deploy missing GEMINI_ANSWER_MODEL silently fall back to it instead of
+# failing loudly. An empty default means require_models() raises instead.
+DEFAULT_GEMINI_ANSWER_MODEL = ""
 DEFAULT_ANTHROPIC_EXTRACTION_MODEL = ""
 DEFAULT_ANTHROPIC_ANSWER_MODEL = ""
 
