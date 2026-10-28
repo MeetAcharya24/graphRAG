@@ -705,7 +705,8 @@ function splitNumbered(text) {
  * NODE_KINDS note at the top of the file. */
 const NODE_KINDS = {
   built: ["actor", "work"],
-  delivered_service_to: ["work", "actor"],
+  delivered_service_to: ["actor", "actor"],
+  received_service: ["actor", "work"],
   used_technology: ["actor", "material"],
   produces: ["actor", "work"],
   works_at: ["actor", "actor"],
@@ -725,11 +726,16 @@ const KIND_LABELS = {
   actor: "organisation or person",
 };
 
-/** One kind per node, from the edges on either side of it; conflicts go neutral. */
-function inferKinds(names, relations) {
+/** One kind per node, from the edges on either side of it; conflicts go
+ * neutral. `directions[i]` is "forward" or "backward" for the hop between
+ * node i and node i+1 - a reversed hop swaps which end of NODE_KINDS[type]
+ * (source-kind, target-kind) describes which node. */
+function inferKinds(names, relations, directions) {
   return names.map((_name, i) => {
-    const incoming = i > 0 ? (NODE_KINDS[relations[i - 1]] || [])[1] : undefined;
-    const outgoing = i < relations.length ? (NODE_KINDS[relations[i]] || [])[0] : undefined;
+    const prevReversed = i > 0 && directions[i - 1] === "backward";
+    const incoming = i > 0 ? (NODE_KINDS[relations[i - 1]] || [])[prevReversed ? 0 : 1] : undefined;
+    const nextReversed = i < relations.length && directions[i] === "backward";
+    const outgoing = i < relations.length ? (NODE_KINDS[relations[i]] || [])[nextReversed ? 1 : 0] : undefined;
     const candidates = [incoming, outgoing].filter(Boolean);
     if (!candidates.length) return "unknown";
     return candidates.every((kind) => kind === candidates[0]) ? candidates[0] : "unknown";
@@ -739,16 +745,40 @@ function inferKinds(names, relations) {
 /**
  * `A —built→ B —delivered_service_to→ C` as pills strung on a wire.
  *
+ * A hop can also arrive as `A ←delivered_service_to— B`: the walk between
+ * two nodes is undirected, but the relation it names is not, and
+ * `render_path` (the backend) reverses the arrow rather than mislabel which
+ * node is the subject. The wire itself gets drawn mirrored to match (CSS
+ * `.path-link.reversed`).
+ *
  * `startIndex` continues the draw order from the previous chain, so several
  * paths read as one sweep across the entry rather than racing each other.
  */
 function renderPathChain(pathText, startIndex) {
-  const parts = String(pathText).split(/\s—(.+?)→\s/);
-  if (parts.length < 3) return { chain: null, nextIndex: startIndex };
+  const text = String(pathText);
+  const hopPattern = /(?:—(.+?)→|←(.+?)—)/g;
+  const names = [];
+  const relations = [];
+  const directions = [];
 
-  const names = parts.filter((_part, i) => i % 2 === 0);
-  const relations = parts.filter((_part, i) => i % 2 === 1);
-  const kinds = inferKinds(names, relations);
+  let cursor = 0;
+  let match;
+  while ((match = hopPattern.exec(text)) !== null) {
+    names.push(text.slice(cursor, match.index).trim());
+    if (match[1] !== undefined) {
+      relations.push(match[1]);
+      directions.push("forward");
+    } else {
+      relations.push(match[2]);
+      directions.push("backward");
+    }
+    cursor = match.index + match[0].length;
+  }
+  names.push(text.slice(cursor).trim());
+
+  if (names.length < 2) return { chain: null, nextIndex: startIndex };
+
+  const kinds = inferKinds(names, relations, directions);
 
   const chain = document.createElement("div");
   chain.className = "path-chain";
@@ -766,7 +796,8 @@ function renderPathChain(pathText, startIndex) {
   names.forEach((name, i) => {
     if (i > 0) {
       const link = document.createElement("span");
-      link.className = "path-link";
+      link.className =
+        directions[i - 1] === "backward" ? "path-link reversed" : "path-link";
       link.style.setProperty("--i", String(index + 1));
 
       const relation = document.createElement("span");

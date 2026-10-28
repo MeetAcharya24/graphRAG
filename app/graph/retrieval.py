@@ -267,6 +267,42 @@ def _only_connects_through_a_hub(
     )
 
 
+def _dedupe_identical_paths(paths: Sequence[GraphPath]) -> list[GraphPath]:
+    """Collapse paths that walk the exact same nodes in the exact same order.
+
+    The graph can legitimately hold two `RELATES` edges between one pair of
+    nodes - the same fact mentioned in two different chunks gets two distinct
+    rel_ids (content+chunk hashed), which is what keeps each mention
+    individually citable. `allShortestPaths` then returns both as separate,
+    node-for-node identical paths, which is not a second route worth
+    rendering twice - just the same route proven by two sources. One path per
+    distinct node sequence survives, keeping the one with the
+    highest-confidence edges; ties break on sorted edge rel_ids, so the
+    choice is deterministic regardless of query result order.
+    """
+    best_by_nodes: dict[tuple[str, ...], GraphPath] = {}
+
+    for path in paths:
+        key = tuple(node.entity_id for node in path.nodes)
+        existing = best_by_nodes.get(key)
+        if existing is None:
+            best_by_nodes[key] = path
+            continue
+
+        this_rank = (
+            sum(edge.confidence for edge in path.edges),
+            tuple(sorted(edge.rel_id for edge in path.edges)),
+        )
+        existing_rank = (
+            sum(edge.confidence for edge in existing.edges),
+            tuple(sorted(edge.rel_id for edge in existing.edges)),
+        )
+        if this_rank > existing_rank:
+            best_by_nodes[key] = path
+
+    return list(best_by_nodes.values())
+
+
 def _dedupe_superset_paths(paths: Sequence[GraphPath]) -> list[GraphPath]:
     """Drop a path whose node set is a strict superset of a shorter path's.
 
@@ -346,7 +382,9 @@ def _boost_shortest_paths(
     }
 
     kept_paths = [
-        path for path in raw_paths if not _only_connects_through_a_hub(path, degree_by_id)
+        path
+        for path in _dedupe_identical_paths(raw_paths)
+        if not _only_connects_through_a_hub(path, degree_by_id)
     ]
     return _dedupe_superset_paths(kept_paths)
 

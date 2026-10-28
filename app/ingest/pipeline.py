@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Sequence
 
 from app.errors import AppError
+from app.graph.dedup import resolve_duplicates
 from app.graph.extractor import extract_from_chunks
 from app.jobs.registry import (
     JOB_STATE_FAILED,
@@ -86,12 +87,21 @@ def run_job(
             cache=extraction_cache,
         )
         registry.update(job_id, stage=STAGE_LINKING)
+
+        # Phase 5 built this and nothing ever called it (STATUS.md): aliased
+        # mentions of the same org/person, across this upload or earlier
+        # ones, stayed separate nodes forever. Runs over the whole graph, not
+        # just this document's new entities - that is the only way to catch
+        # a duplicate against something a previous upload already added.
+        dedup_report = resolve_duplicates(graph_store, embedder=embedder)
+
         log.info(
-            "Job %s: %d entities, %d relations, %d batch(es) failed",
+            "Job %s: %d entities, %d relations, %d batch(es) failed, %d duplicate(s) merged",
             job_id,
             summary.entities_written,
             summary.relations_written,
             summary.batches_failed,
+            len(dedup_report.merges),
         )
         registry.update(job_id, state=JOB_STATE_SUCCEEDED)
     except AppError as exc:

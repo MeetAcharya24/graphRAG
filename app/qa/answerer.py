@@ -62,11 +62,23 @@ def _entity_name(entity_id: str, bundle: EvidenceBundle) -> str:
 
 
 def render_path(path: GraphPath) -> str:
-    """A walk as a chain: `A —type→ B —type2→ C`, in the order it was found."""
+    """A walk as a chain: `A —type→ B —type2→ C`, in the order it was found.
+
+    The walk is undirected (it follows `allShortestPaths` regardless of which
+    way a relationship points), but each edge still has a true direction.
+    When a hop is traversed opposite to how it is stored, the arrow reverses
+    (`←type—`) rather than silently printing the earlier node as the subject
+    of a relation it is actually the object of - the live bug this fixes:
+    "Ryan Group —delivered_service_to→ UI/UX" when the fact is the other way
+    around.
+    """
     parts = [path.nodes[0].name]
-    for edge, node in zip(path.edges, path.nodes[1:]):
-        parts.append(f"—{edge.type}→")
-        parts.append(node.name)
+    for edge, left, right in zip(path.edges, path.nodes, path.nodes[1:]):
+        if edge.source_id == left.entity_id:
+            parts.append(f"—{edge.type}→")
+        else:
+            parts.append(f"←{edge.type}—")
+        parts.append(right.name)
     return " ".join(parts)
 
 

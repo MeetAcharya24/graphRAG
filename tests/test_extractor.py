@@ -92,6 +92,7 @@ def test_agency_client_relation_types_are_available() -> None:
     receiving a service was extracted as "Agency09 produces BITS Pilani")."""
     assert "built" in RELATION_TYPES
     assert "delivered_service_to" in RELATION_TYPES
+    assert "received_service" in RELATION_TYPES
     assert "used_technology" in RELATION_TYPES
     assert "SERVICE" in ENTITY_TYPES
     assert "TECHNOLOGY" in ENTITY_TYPES
@@ -177,9 +178,11 @@ def test_a_relation_is_attributed_to_the_chunk_it_names() -> None:
 
 def test_a_shared_service_resolves_to_its_own_entity_not_a_client_edge() -> None:
     """The scenario `produces`/`collaborates_with` used to mangle: a service
-    delivered to two different clients should resolve as ORG--built-->SERVICE
-    and SERVICE--delivered_service_to-->ORG twice, giving the two clients a
-    real two-hop link through the service - not through the agency."""
+    delivered to two different clients should resolve as ORG--built-->SERVICE,
+    ORG--delivered_service_to-->ORG (vendor to client, direct) for each
+    client, and ORG--received_service-->SERVICE for each client too - giving
+    the two clients a real two-hop link through the service, via
+    received_service, not through the agency."""
     delivery = (
         "Agency09 built CMS Implementation and delivered it to BITS Pilani "
         "and Ryan Group."
@@ -198,12 +201,20 @@ def test_a_shared_service_resolves_to_its_own_entity_not_a_client_edge() -> None
                 source_type="ORG", target_type="SERVICE",
             ),
             _relation(
-                "CMS Implementation", "BITS Pilani", "delivered_service_to", index=0,
-                source_type="SERVICE", target_type="ORG",
+                "Agency09", "BITS Pilani", "delivered_service_to", index=0,
+                source_type="ORG", target_type="ORG",
             ),
             _relation(
-                "CMS Implementation", "Ryan Group", "delivered_service_to", index=0,
-                source_type="SERVICE", target_type="ORG",
+                "Agency09", "Ryan Group", "delivered_service_to", index=0,
+                source_type="ORG", target_type="ORG",
+            ),
+            _relation(
+                "BITS Pilani", "CMS Implementation", "received_service", index=0,
+                source_type="ORG", target_type="SERVICE",
+            ),
+            _relation(
+                "Ryan Group", "CMS Implementation", "received_service", index=0,
+                source_type="ORG", target_type="SERVICE",
             ),
         ],
     )
@@ -213,9 +224,23 @@ def test_a_shared_service_resolves_to_its_own_entity_not_a_client_edge() -> None
     types_by_name = {e.name: e.type for e in entities}
     assert types_by_name["CMS Implementation"] == "SERVICE"
     rel_types = {r.type for r in relations}
-    assert rel_types == {"built", "delivered_service_to"}
+    assert rel_types == {"built", "delivered_service_to", "received_service"}
     assert "produces" not in rel_types
     assert "collaborates_with" not in rel_types
+
+    received = [r for r in relations if r.type == "received_service"]
+    assert {r.source_id for r in received} == {
+        make_entity_id("ORG", "BITS Pilani"),
+        make_entity_id("ORG", "Ryan Group"),
+    }
+    assert {r.target_id for r in received} == {make_entity_id("SERVICE", "CMS Implementation")}
+
+    delivered = [r for r in relations if r.type == "delivered_service_to"]
+    assert {r.source_id for r in delivered} == {make_entity_id("ORG", "Agency09")}
+    assert {r.target_id for r in delivered} == {
+        make_entity_id("ORG", "BITS Pilani"),
+        make_entity_id("ORG", "Ryan Group"),
+    }
 
 
 def test_an_out_of_range_chunk_index_is_dropped() -> None:

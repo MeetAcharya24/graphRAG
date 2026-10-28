@@ -37,10 +37,24 @@ log = get_logger(__name__)
 # has no entity for the service itself, and the model is left trying to wedge
 # that fact into a direct Agency-to-client edge - observed live as the
 # nonsensical "Agency09 produces BITS Pilani" (a client is not a product).
-# With SERVICE/TECHNOLOGY entities, the same fact becomes two edges
-# (Agency09 --built--> Mobile App Development, Mobile App Development
-# --delivered_service_to--> BITS Pilani), and two clients sharing one service
-# are now a real two-hop link through that service - not through Agency09.
+# With SERVICE/TECHNOLOGY entities, the same fact becomes three edges
+# (Agency09 --built--> Mobile App Development, Agency09
+# --delivered_service_to--> BITS Pilani, BITS Pilani --received_service-->
+# Mobile App Development), and two clients sharing one service are still a
+# real two-hop link through that service - through received_service now,
+# not through delivered_service_to.
+#
+# delivered_service_to used to run SERVICE --delivered_service_to--> ORG
+# ("the service was delivered to this client") - correct at extraction time
+# (live data checked: every edge was stored SERVICE->ORG, never reversed),
+# but the vendor's name appears nowhere in that edge, and a graph walk that
+# visits the client before the service (the walk is undirected; the edge is
+# not) prints it backward: "Ryan Group --delivered_service_to--> UI/UX".
+# Splitting the one awkward edge into two fixes the direction at its source
+# instead of leaving it to the renderer alone: delivered_service_to is now
+# the direct business relationship (ORG vendor --delivered_service_to--> ORG
+# client), and received_service is the specific offering (ORG client
+# --received_service--> SERVICE).
 ENTITY_TYPES = (
     "PERSON",
     "ORG",
@@ -70,6 +84,7 @@ RELATION_TYPES = (
     # service rendered to a client.
     "built",
     "delivered_service_to",
+    "received_service",
     "used_technology",
     # The escape hatch: a real relationship that fits nothing above is kept
     # rather than discarded, with its own wording in `label`.
@@ -207,8 +222,12 @@ Rules:
   an app, a campaign) is its own SERVICE entity, and a named tool, platform or
   language it was built with is its own TECHNOLOGY entity - never fold either
   into the organization that made or used it.
-  - ORG `built` SERVICE - the organization that created or delivered it.
-  - SERVICE `delivered_service_to` ORG - the client it was delivered to.
+  - ORG `built` SERVICE - the vendor that created the offering.
+  - ORG `delivered_service_to` ORG - the vendor is the source, the client
+    receiving the work is the target. Never the other way around: the client
+    does not "deliver service to" the vendor.
+  - ORG `received_service` SERVICE - the client is the source, the specific
+    named offering it received is the target.
   - ORG `used_technology` TECHNOLOGY - a technology an org built with or adopted.
   A client receiving work is never `produces`, and a vendor relationship is
   never `collaborates_with` - those are for an organization's own output and

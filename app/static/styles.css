@@ -590,6 +590,16 @@ input:focus {
   border-left: 5px solid var(--lamp);
 }
 
+/* A hop walked opposite to how it is stored (see `renderPathChain`'s
+   `directions`): the wire's arrowhead mirrors to the left edge so the chain
+   still points at the relation's true subject, not just the earlier pill. */
+.path-link.reversed .path-wire::after {
+  right: auto;
+  left: -1px;
+  border-left: none;
+  border-right: 5px solid var(--lamp);
+}
+
 .path-pill {
   flex: none;
   font-family: var(--serif);

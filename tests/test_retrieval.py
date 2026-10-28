@@ -371,3 +371,34 @@ def test_a_path_that_is_a_superset_of_a_shorter_one_is_deduped() -> None:
     assert {y.entity_id, z.entity_id} in node_sets
     assert {x.entity_id, y.entity_id, z.entity_id} not in node_sets
     assert len(paths) == 2
+
+
+def test_parallel_edges_between_the_same_pair_render_as_one_path() -> None:
+    """The graph legitimately holds two RELATES edges between the same two
+    nodes - the same fact mentioned in two different chunks gets two rel_ids
+    (rel_id is content+chunk hashed, so each mention stays individually
+    citable), not a bug to merge away. `allShortestPaths` then returns both
+    as separate, node-for-node identical paths - the live bug: "Pride of
+    Cows -> Mobile App Development" rendered twice. One rendered path per
+    distinct node sequence is what retrieval should hand back."""
+    from app.graph.retrieval import _boost_shortest_paths
+
+    store = InMemoryGraphStore()
+    client = _entity("Pride of Cows", "ORG")
+    service = _entity("Mobile App Development", "SERVICE")
+    for entity in (client, service):
+        store.upsert_entity(entity)
+
+    store.upsert_relation(
+        _relation("r-mention-1", service, client, "delivered_service_to", chunk_id="doc:4")
+    )
+    store.upsert_relation(
+        _relation("r-mention-2", service, client, "delivered_service_to", chunk_id="doc:5")
+    )
+
+    seed_ids = [client.entity_id, service.entity_id]
+    nodes, edges = expand_subgraph(seed_ids, store)
+    paths = _boost_shortest_paths(seed_ids, store, nodes, edges)
+
+    assert len(paths) == 1
+    assert {n.entity_id for n in paths[0].nodes} == {client.entity_id, service.entity_id}

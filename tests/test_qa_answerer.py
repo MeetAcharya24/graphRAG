@@ -67,6 +67,68 @@ def test_a_two_hop_path_renders_as_a_chain() -> None:
     )
 
 
+# --- direction: the walk is undirected, the edges are not -------------------
+#
+# `allShortestPaths` walks a relationship regardless of which way it points,
+# so a hop can be traversed backward relative to how it was stored. Printing
+# path.nodes order unconditionally ("A --type--> B") then reads backward for
+# that hop - the live bug: "Ryan Group --delivered service to--> UI/UX" when
+# the stored fact is "UI/UX delivered_service_to Ryan Group" (UI/UX is the
+# service, Ryan Group the client; verified against all 38 live
+# delivered_service_to edges - every one stored SERVICE->ORG, never reversed).
+
+RYAN_GROUP = Entity(entity_id="ORG:ryan group", name="Ryan Group", type="ORG")
+UI_UX = Entity(entity_id="SERVICE:ui/ux", name="UI/UX", type="SERVICE")
+TATA_MOTORS = Entity(entity_id="ORG:tata motors", name="Tata Motors", type="ORG")
+WEBSITE_DD = Entity(
+    entity_id="SERVICE:website design & development",
+    name="Website Design & Development",
+    type="SERVICE",
+)
+
+
+def test_a_hop_walked_backward_renders_with_a_reversed_arrow() -> None:
+    """The walk visits Ryan Group then UI/UX, but the edge is stored the
+    other way - the rendered sentence must still read UI/UX as the subject."""
+    delivered = Relation(
+        rel_id="r3",
+        source_id=UI_UX.entity_id,
+        target_id=RYAN_GROUP.entity_id,
+        type="delivered_service_to",
+        source_chunk_id="doc:0",
+    )
+    path = GraphPath(nodes=(RYAN_GROUP, UI_UX), edges=(delivered,))
+
+    assert render_path(path) == "Ryan Group ←delivered_service_to— UI/UX"
+
+
+def test_a_mixed_direction_path_renders_each_hop_correctly() -> None:
+    """Reproduces the live nonsense path: both edges point into Tata Motors
+    (it is everyone's client, never the vendor), so the second hop - walked
+    from Tata Motors out to the second service - must render reversed while
+    the first hop, walked the same way it is stored, renders forward."""
+    forward = Relation(
+        rel_id="r4",
+        source_id=UI_UX.entity_id,
+        target_id=TATA_MOTORS.entity_id,
+        type="delivered_service_to",
+        source_chunk_id="doc:0",
+    )
+    backward = Relation(
+        rel_id="r5",
+        source_id=WEBSITE_DD.entity_id,
+        target_id=TATA_MOTORS.entity_id,
+        type="delivered_service_to",
+        source_chunk_id="doc:1",
+    )
+    path = GraphPath(nodes=(UI_UX, TATA_MOTORS, WEBSITE_DD), edges=(forward, backward))
+
+    assert render_path(path) == (
+        "UI/UX —delivered_service_to→ Tata Motors "
+        "←delivered_service_to— Website Design & Development"
+    )
+
+
 # --- the empty bundle costs nothing ------------------------------------------
 
 
