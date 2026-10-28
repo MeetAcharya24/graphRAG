@@ -24,6 +24,7 @@ const WAKE_DELAY_MS = 3500;
 const POLL_INTERVAL_MS = 900;
 const AUTH_FLAG = "graphrag_authed";
 const PILL_STEP_MS = 120;
+const DELETE_CONFIRM_TIMEOUT_MS = 3000;
 
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
@@ -328,8 +329,11 @@ function uploadOneFile(file) {
   const row = document.createElement("li");
   row.className = "upload-row";
   row.innerHTML =
+    '<div class="upload-info">' +
     '<div class="filename"></div><div class="status-line"></div>' +
-    '<div class="meter"><span></span></div>';
+    '<div class="meter"><span></span></div>' +
+    "</div>" +
+    '<button type="button" class="delete-doc" aria-label="Delete this document">Delete</button>';
   row.querySelector(".filename").textContent = file.name;
   const statusLine = row.querySelector(".status-line");
   const meter = row.querySelector(".meter span");
@@ -360,7 +364,50 @@ function uploadOneFile(file) {
       fail(describeError(result.error));
       return;
     }
+    wireDeleteButton(row, result.data.doc_id, statusLine);
     pollJob(result.data.job_id, { row, statusLine, meter, fail });
+  });
+}
+
+/* A document is only deletable once it is actually in the graph - a row
+ * still uploading or failed has nothing server-side worth removing. The
+ * button stays in the markup throughout (simpler than inserting it later)
+ * but only `.upload-row.done` shows it, in CSS.
+ *
+ * Confirmation is inline, not a native confirm() dialog: a second click
+ * within DELETE_CONFIRM_TIMEOUT_MS commits, otherwise the button reverts -
+ * calmer than a popup, and the only way to style it to match the page. */
+function wireDeleteButton(row, docId, statusLine) {
+  const button = row.querySelector(".delete-doc");
+  let revertTimer = null;
+
+  const revert = () => {
+    clearTimeout(revertTimer);
+    button.classList.remove("confirming");
+    button.textContent = "Delete";
+  };
+
+  button.addEventListener("click", () => {
+    if (!button.classList.contains("confirming")) {
+      button.classList.add("confirming");
+      button.textContent = "Confirm delete?";
+      revertTimer = setTimeout(revert, DELETE_CONFIRM_TIMEOUT_MS);
+      return;
+    }
+
+    clearTimeout(revertTimer);
+    button.disabled = true;
+    button.textContent = "Deleting…";
+
+    api(`/api/documents/${docId}`, { method: "DELETE" }).then((result) => {
+      if (!result.ok) {
+        button.disabled = false;
+        revert();
+        statusLine.textContent = describeError(result.error);
+        return;
+      }
+      row.remove();
+    });
   });
 }
 

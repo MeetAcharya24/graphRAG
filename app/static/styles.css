@@ -928,9 +928,46 @@ input:focus {
 }
 
 .upload-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
   border-left: 2px solid var(--rule);
   padding: 0.4rem 0 0.4rem 0.85rem;
   font-size: 0.9rem;
+}
+
+.upload-info {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Muted and text-only until a document is actually ready to remove, so the
+   row's accent colour (amber while working, signal while failed) stays the
+   only thing competing for attention until then. */
+.delete-doc {
+  display: none;
+  flex: none;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  padding: 0.2rem 0.3rem;
+  font-family: var(--sans);
+  font-size: 0.75rem;
+  color: var(--ink-muted);
+}
+
+.delete-doc:hover:not(:disabled) {
+  border-color: transparent;
+  color: var(--signal);
+}
+
+.delete-doc.confirming {
+  color: var(--signal);
+}
+
+.upload-row.done .delete-doc {
+  display: inline-block;
 }
 
 /* Amber marks what is still happening. A finished row recedes rather than

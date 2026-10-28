@@ -27,6 +27,7 @@ from app.config import (
 from app.errors import (
     AnswerBudgetExhausted,
     AppError,
+    DocumentNotFound,
     JobNotFound,
     TooManyChunks,
     TooManyRequests,
@@ -204,6 +205,44 @@ class _NoCacheForStatic:
         await self.app(scope, receive, send_with_header)
 
 
+class _RequestLogger:
+    """One log line per request: method, path, status, duration.
+
+    Plain ASGI, not `@app.middleware("http")` - the same streaming-response
+    timing issue documented on `_NoCacheForStatic` above applies here too,
+    since this also needs to read the status off `http.response.start`.
+    """
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        status_code = 0
+        started = time.monotonic()
+
+        async def send_and_capture_status(message: dict) -> None:
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = message["status"]
+            await send(message)
+
+        await self.app(scope, receive, send_and_capture_status)
+
+        duration_ms = (time.monotonic() - started) * 1000
+        log_method = log.warning if status_code >= 400 else log.info
+        log_method(
+            "%s %s -> %d (%.1fms)",
+            scope["method"],
+            scope["path"],
+            status_code,
+            duration_ms,
+        )
+
+
 app.add_middleware(_NoCacheForStatic)
 
 
@@ -371,6 +410,12 @@ async def require_session(request: Request, call_next):
     )
 
 
+# Registered after `require_session` so it wraps *outside* that middleware
+# (Starlette stacks middleware in reverse add order) and logs every response,
+# including the 401 `require_session` returns without calling `call_next`.
+app.add_middleware(_RequestLogger)
+
+
 @app.post("/api/login")
 async def login(request: Request, body: LoginRequest) -> JSONResponse:
     """Exchange the shared password for a session cookie."""
@@ -501,6 +546,43 @@ def get_job(job_id: str) -> dict:
             chunks_total=job.chunks_total,
             error=job.error,
         ).model_dump()
+    )
+
+
+@app.delete("/api/documents/{doc_id}")
+def delete_document(doc_id: str) -> dict:
+    """Remove a document's chunks and its mentions in the graph (Phase 11).
+
+    Chunk ids are read before `delete_doc` removes them - `remove_mentions`
+    needs them, and `delete_doc` only reports a count. Orphaned entities (no
+    mentions left at all) are swept after, so deleting the only document that
+    referenced an entity actually removes it rather than leaving a stub.
+    """
+    vector_store = get_vector_store()
+    chunk_ids = vector_store.chunk_ids_for_doc(doc_id)
+    if not chunk_ids:
+        raise DocumentNotFound(
+            f"No document {doc_id!r} found.",
+            hint="It may already be deleted, or the id may be wrong.",
+        )
+
+    chunks_removed = vector_store.delete_doc(doc_id)
+    graph_store = get_graph_store()
+    graph_store.remove_mentions(chunk_ids)
+    entities_removed = graph_store.delete_orphaned_entities()
+
+    log.info(
+        "Deleted document %s (%d chunks, %d orphaned entities)",
+        doc_id,
+        chunks_removed,
+        entities_removed,
+    )
+    return ok(
+        {
+            "doc_id": doc_id,
+            "chunks_removed": chunks_removed,
+            "entities_removed": entities_removed,
+        }
     )
 
 

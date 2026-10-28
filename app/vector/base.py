@@ -69,6 +69,14 @@ class VectorStore(Protocol):
         """Remove every chunk of a document. Returns how many were removed."""
         ...
 
+    def chunk_ids_for_doc(self, doc_id: str) -> list[str]:
+        """Every chunk id belonging to a document, before deleting it.
+
+        A caller that also has to clean up graph mentions (Phase 11's document
+        delete) needs these ids first - `delete_doc` only reports a count.
+        """
+        ...
+
     def count(self) -> int:
         """How many chunks are stored."""
         ...

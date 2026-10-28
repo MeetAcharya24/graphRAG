@@ -145,6 +145,41 @@ def test_a_request_with_no_file_is_rejected(auth_client) -> None:
     assert response.status_code == 422
 
 
+# --- deleting a document --------------------------------------------------
+
+
+def test_deleting_a_document_removes_its_chunks(auth_client, poll_job, fakes) -> None:
+    response = _upload(auth_client, "notes.txt", LONG_BODY)
+    data = response.json()["data"]
+    poll_job(auth_client, data["job_id"])
+
+    delete_response = auth_client.delete(f"/api/documents/{data['doc_id']}")
+
+    assert delete_response.status_code == 200
+    body = delete_response.json()
+    assert body["ok"] is True
+    assert body["data"]["doc_id"] == data["doc_id"]
+    assert data["doc_id"] not in fakes["store"].document_ids()
+
+
+def test_deleting_an_unknown_document_is_a_404(auth_client) -> None:
+    response = auth_client.delete("/api/documents/does-not-exist")
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "document_not_found"
+
+
+def test_a_deleted_document_can_be_deleted_again_as_a_404(auth_client, poll_job) -> None:
+    response = _upload(auth_client, "notes.txt", LONG_BODY)
+    data = response.json()["data"]
+    poll_job(auth_client, data["job_id"])
+    auth_client.delete(f"/api/documents/{data['doc_id']}")
+
+    second = auth_client.delete(f"/api/documents/{data['doc_id']}")
+
+    assert second.status_code == 404
+
+
 # --- the error envelope stays consistent ---------------------------------
 
 

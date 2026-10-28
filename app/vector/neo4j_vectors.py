@@ -125,6 +125,10 @@ class Neo4jVectorStore:
         records = self._run(cypher.CHUNK_DIMENSION, write=False)
         return records[0]["dimension"] if records else None
 
+    def chunk_ids_for_doc(self, doc_id: str) -> list[str]:
+        records = self._run(cypher.CHUNK_IDS_FOR_DOC, write=False, doc_id=doc_id)
+        return list(records[0]["chunk_ids"]) if records else []
+
     # --- deleting ---
 
     def delete_doc(self, doc_id: str) -> int:

@@ -191,6 +191,9 @@ VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 # quota budget: ~2 batched embedding calls plus ~40 batched extraction calls.
 MAX_UPLOAD_BYTES = 1 * 1024 * 1024
 SUPPORTED_EXTENSIONS = (".pdf", ".txt", ".md")
+# Longest filename kept as-is; anything over this is truncated (Phase 11
+# hardening) so a pathological name can't bloat logs, job records, or the UI.
+MAX_FILENAME_LENGTH = 200
 # The hard ceiling on chunks per document (D14): rejected before any
 # embedding call is made, never silently truncated.
 MAX_CHUNK_COUNT = 200

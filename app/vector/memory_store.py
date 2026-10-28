@@ -91,6 +91,9 @@ class InMemoryVectorStore:
             del self._vectors[chunk_id]
         return len(doomed)
 
+    def chunk_ids_for_doc(self, doc_id: str) -> list[str]:
+        return [cid for cid, chunk in self._chunks.items() if chunk.doc_id == doc_id]
+
     def count(self) -> int:
         return len(self._chunks)
 

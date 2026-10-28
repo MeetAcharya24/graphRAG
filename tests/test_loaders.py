@@ -146,6 +146,41 @@ def test_a_corrupt_pdf_is_reported_as_a_typed_error() -> None:
     assert excinfo.value.hint
 
 
+# --- filename sanitization -------------------------------------------------
+
+
+def test_path_components_are_stripped_from_the_filename() -> None:
+    doc = load_document("../../etc/passwd.txt", b"content")
+
+    assert doc.filename == "passwd.txt"
+
+
+def test_backslash_path_components_are_stripped_from_the_filename() -> None:
+    doc = load_document("C:\\Users\\evil\\notes.txt", b"content")
+
+    assert doc.filename == "notes.txt"
+
+
+def test_control_characters_are_removed_from_the_filename() -> None:
+    doc = load_document("notes\x00\x01\x1f.txt", b"content")
+
+    assert doc.filename == "notes.txt"
+
+
+def test_an_overlong_filename_is_truncated_but_keeps_its_extension() -> None:
+    from app.config import MAX_FILENAME_LENGTH
+
+    doc = load_document("a" * 500 + ".txt", b"content")
+
+    assert len(doc.filename) <= MAX_FILENAME_LENGTH
+    assert doc.filename.endswith(".txt")
+
+
+def test_a_filename_with_only_path_separators_falls_back_to_a_default_name() -> None:
+    with pytest.raises(UnsupportedFileType):
+        load_document("../../", b"content")
+
+
 # --- rejections -----------------------------------------------------------
 
 

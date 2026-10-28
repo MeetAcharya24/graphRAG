@@ -282,6 +282,10 @@ RETURN c.chunk_id AS chunk_id, c.doc_id AS doc_id, c.index AS index, c.text AS t
        c.filename AS filename
 """
 
+CHUNK_IDS_FOR_DOC = """
+MATCH (c:Chunk {doc_id: $doc_id}) RETURN collect(c.chunk_id) AS chunk_ids
+"""
+
 DELETE_DOCUMENT = """
 MATCH (c:Chunk {doc_id: $doc_id})
 WITH collect(c) AS chunks, count(c) AS removed

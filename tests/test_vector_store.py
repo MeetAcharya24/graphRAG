@@ -209,6 +209,22 @@ def test_fetching_no_ids_returns_nothing(store, embedder) -> None:
     assert store.get_by_ids([]) == []
 
 
+# --- chunk ids for a document ----------------------------------------------
+
+
+def test_chunk_ids_for_doc_returns_only_that_documents_chunks(store, embedder) -> None:
+    _add(store, embedder, "doc1", ["alpha", "beta"])
+    _add(store, embedder, "doc2", ["gamma"])
+
+    assert sorted(store.chunk_ids_for_doc("doc1")) == ["doc1:0", "doc1:1"]
+
+
+def test_chunk_ids_for_doc_is_empty_for_an_unknown_document(store, embedder) -> None:
+    _add(store, embedder, "doc1", ["alpha"])
+
+    assert store.chunk_ids_for_doc("never-existed") == []
+
+
 # --- deleting -------------------------------------------------------------
 
 

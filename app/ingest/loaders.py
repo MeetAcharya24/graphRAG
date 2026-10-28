@@ -13,7 +13,12 @@ import re
 
 from pypdf import PdfReader
 
-from app.config import DOC_ID_HASH_LENGTH, MAX_UPLOAD_BYTES, SUPPORTED_EXTENSIONS
+from app.config import (
+    DOC_ID_HASH_LENGTH,
+    MAX_FILENAME_LENGTH,
+    MAX_UPLOAD_BYTES,
+    SUPPORTED_EXTENSIONS,
+)
 from app.errors import EmptyDocument, UnsupportedFileType, UploadTooLarge
 from app.logging_conf import get_logger
 from app.schemas import LoadedDocument
@@ -38,6 +43,27 @@ def compute_doc_id(data: bytes) -> str:
 def _extension_of(filename: str) -> str:
     _, separator, extension = filename.rpartition(".")
     return f".{extension.lower()}" if separator else ""
+
+
+def sanitize_filename(filename: str) -> str:
+    """Reduce a client-supplied filename to a bare, display-safe name.
+
+    Strips any directory components (either slash style, so a path crafted on
+    the other OS is caught too), drops control characters, and caps length -
+    the filename is never used to build a filesystem path, but it is echoed
+    into logs, job records, and the UI, so it still needs to behave.
+    """
+    name = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    name = "".join(char for char in name if ord(char) >= 32 and char != "\x7f").strip()
+
+    if len(name) > MAX_FILENAME_LENGTH:
+        stem, separator, extension = name.rpartition(".")
+        if separator and len(extension) <= 10:
+            name = stem[: MAX_FILENAME_LENGTH - len(extension) - 1] + "." + extension
+        else:
+            name = name[:MAX_FILENAME_LENGTH]
+
+    return name
 
 
 def normalise_text(text: str) -> str:
@@ -95,6 +121,7 @@ def load_document(filename: str, data: bytes) -> LoadedDocument:
             hint=f"Split it into smaller documents, each under {limit_mb} MB.",
         )
 
+    filename = sanitize_filename(filename)
     extension = _extension_of(filename)
     loader = _LOADERS.get(extension)
     if loader is None:
